@@ -344,6 +344,15 @@ class AuKLocalGenerateEdit(io.ComfyNode):
             submitted = submit_with_recovery(client, request_id, payload)
             disconnected_at = None
             while submitted["state"] not in {"succeeded", "failed", "cancelled", "interrupted"}:
+                scheduler = submitted.get("scheduler") or {}
+                if (
+                    scheduler.get("state") in {"paused", "stopping", "stopped"}
+                    or scheduler.get("dispatcher_alive") is False
+                ):
+                    detail = scheduler.get("error") or "任务调度不可用"
+                    raise RuntimeError(
+                        f"AuK Local 任务 {request_id} 已暂停：{detail}。请检查服务诊断，恢复后重启服务并重试。"
+                    )
                 check_interrupted()
                 time.sleep(0.4)
                 try:
@@ -356,8 +365,9 @@ class AuKLocalGenerateEdit(io.ComfyNode):
         except BaseException:  # noqa: BLE001 - Comfy interrupts also require remote task cancellation
             try:
                 client.json_request("POST", f"/api/v1/tasks/{request_id}/cancel", {}, timeout=5)
-            finally:
-                raise
+            except Exception:  # noqa: BLE001 - preserve the original failure if service cancellation fails
+                pass
+            raise
         if submitted["state"] != "succeeded":
             raise RuntimeError(f"AuK任务{submitted['state']}：{submitted.get('error') or ''}")
         wav_bytes = client.download(f"/api/v1/tasks/{request_id}/audio")

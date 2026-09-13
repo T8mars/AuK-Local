@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -137,3 +138,33 @@ def test_seed_keeps_full_integer_precision(tmp_path, seed):
         assert normalized["seed"] == seed
     finally:
         manager.close()
+
+
+def test_paused_scheduler_is_reported_and_rejects_new_tasks(tmp_path):
+    paths = LocalPaths.from_root(tmp_path)
+    manager = TaskManager(paths, start_worker=False)
+    headers = {"X-AuK-Token": load_or_create_token(paths)}
+    with TestClient(create_app(paths, with_ui=False, manager=manager)) as client:
+        manager._set_scheduler_state("paused", "synthetic storage failure")
+        health = client.get("/api/v1/health").json()
+        assert health["status"] == "degraded"
+        assert not health["inference_ready"]
+        assert not health["scheduler"]["accepting_tasks"]
+        response = client.post("/api/v1/tasks", headers=headers, json={
+            "task_key": "instruct_tts", "primary": "test", "generation_seconds": 1,
+        })
+        assert response.status_code == 503
+        assert not manager.store.list_recent()
+
+
+def test_unreadable_task_database_returns_503(tmp_path, monkeypatch):
+    paths = LocalPaths.from_root(tmp_path)
+    manager = TaskManager(paths, start_worker=False)
+    headers = {"X-AuK-Token": load_or_create_token(paths)}
+
+    def unavailable(*_args):
+        raise sqlite3.OperationalError("synthetic database unavailable")
+
+    with TestClient(create_app(paths, with_ui=False, manager=manager)) as client:
+        monkeypatch.setattr(manager.store, "list_recent", unavailable)
+        assert client.get("/api/v1/tasks", headers=headers).status_code == 503

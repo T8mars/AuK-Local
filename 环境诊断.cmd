@@ -1,2 +1,2 @@
 @echo off
-call "%~dp0scripts\Diagnose-AuK.cmd"
+call "%~dp0scripts\Diagnose-AuK.cmd" %*

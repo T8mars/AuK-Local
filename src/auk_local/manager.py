@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import math
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -15,6 +17,13 @@ from .config import LocalPaths
 from .store import TaskRecord, TaskStore
 from .task_templates import TASK_BY_KEY, build_instruction
 from .worker import TaskCancelled, WorkerSupervisor
+
+
+logger = logging.getLogger(__name__)
+
+
+class _StorageUnavailable(RuntimeError):
+    pass
 
 
 class _SingleInstanceLock:
@@ -97,12 +106,20 @@ def _boolean(value: Any, field: str) -> bool:
 
 
 class TaskManager:
+    STORAGE_ATTEMPTS = 4
+    STORAGE_RETRY_DELAY = 0.1
+
     def __init__(self, paths: LocalPaths, *, start_worker: bool = True):
         self.paths = paths
         paths.ensure_writable_dirs()
         self._instance_lock = _SingleInstanceLock(paths.data / "task-manager.lock")
         self._close_guard = threading.Lock()
         self._closed = False
+        self._health_guard = threading.Lock()
+        self._scheduler_state = "ready"
+        self._scheduler_error: str | None = None
+        self._pending_outcome: dict[str, Any] | None = None
+        self._dispatcher = None
         self.task_files = paths.data / "tasks"
         self.task_files.mkdir(parents=True, exist_ok=True)
         try:
@@ -113,13 +130,65 @@ class TaskManager:
             self._instance_lock.close()
             raise
         self._submit_lock = threading.Lock()
-        self.supervisor = WorkerSupervisor(paths) if start_worker else None
+        try:
+            self.supervisor = WorkerSupervisor(paths, cancel_check=self._cancel_requested) if start_worker else None
+        except BaseException:
+            self._instance_lock.close()
+            raise
         self._stop = threading.Event()
         self._wake = threading.Event()
-        self._dispatcher = None
         if self.supervisor is not None:
             self._dispatcher = threading.Thread(target=self._dispatch_loop, name="AuK task dispatcher", daemon=True)
             self._dispatcher.start()
+
+    @property
+    def scheduler_health(self) -> dict[str, Any]:
+        """In-memory status remains readable when the task database is unavailable."""
+        with self._health_guard:
+            alive = self._dispatcher is None or self._dispatcher.is_alive()
+            return {
+                "state": self._scheduler_state,
+                "error": self._scheduler_error,
+                "accepting_tasks": not self._closed and self._scheduler_state == "ready" and alive,
+                "dispatcher_alive": self._dispatcher.is_alive() if self._dispatcher is not None else None,
+                "pending_request_id": (
+                    self._pending_outcome["request_id"] if self._pending_outcome is not None else None
+                ),
+            }
+
+    def _set_scheduler_state(self, state: str, error: str | None = None) -> None:
+        with self._health_guard:
+            if not self._closed and (self._scheduler_state != "paused" or state == "paused"):
+                self._scheduler_state = state
+                self._scheduler_error = error
+
+    def _storage_call(self, operation: str, callback):
+        for attempt in range(self.STORAGE_ATTEMPTS):
+            try:
+                result = callback()
+            except (sqlite3.Error, OSError) as exc:
+                detail = f"{operation}: {type(exc).__name__}: {exc}"
+                if attempt + 1 == self.STORAGE_ATTEMPTS:
+                    self._set_scheduler_state("paused", detail)
+                    raise _StorageUnavailable(detail) from exc
+                self._set_scheduler_state("recovering", detail)
+                time.sleep(self.STORAGE_RETRY_DELAY * (2**attempt))
+            else:
+                self._set_scheduler_state("ready")
+                return result
+        raise AssertionError("unreachable")
+
+    def _ensure_accepting(self) -> None:
+        if not self.scheduler_health["accepting_tasks"]:
+            raise RuntimeError("AuK 任务调度暂不可用，请查看服务诊断；恢复存储后重新启动服务")
+
+    def _cancel_requested(self, request_id: str) -> bool:
+        health = self.scheduler_health
+        if health["state"] == "paused":
+            raise _StorageUnavailable(health["error"] or "任务调度已暂停")
+        return self._closed or self._storage_call(
+            "检查任务取消状态", lambda: self.store.get(request_id).state in {"cancelling", "cancelled"}
+        )
 
     @staticmethod
     def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +244,7 @@ class TaskManager:
 
     def submit(self, payload: dict[str, Any]) -> tuple[TaskRecord, bool]:
         with self._submit_lock:
+            self._ensure_accepting()
             request = self.normalize_request(payload)
             source_payload = payload.get("audio")
             task_template = TASK_BY_KEY[request["task_key"]]
@@ -206,8 +276,9 @@ class TaskManager:
                 temporary = input_path.with_suffix(".tmp")
                 temporary.write_bytes(raw_audio)
                 os.replace(temporary, input_path)
-            record, created = self.store.submit(
-                request["request_id"], request, str(input_path) if input_path else None
+            record, created = self._storage_call(
+                "接收任务",
+                lambda: self.store.submit(request["request_id"], request, str(input_path) if input_path else None),
             )
         if created:
             self._wake.set()
@@ -217,7 +288,7 @@ class TaskManager:
         return self.store.get(request_id)
 
     def cancel(self, request_id: str) -> str:
-        state = self.store.cancel(request_id)
+        state = self._storage_call("取消任务", lambda: self.store.cancel(request_id))
         if state == "cancelling" and self.supervisor is not None:
             self.supervisor.cancel(request_id)
         return state
@@ -242,33 +313,96 @@ class TaskManager:
             }
         return self.submit(payload)
 
-    def _dispatch_loop(self) -> None:
-        while not self._stop.is_set():
-            record = self.store.claim_next()
-            if record is None:
-                self._wake.wait(0.5)
-                self._wake.clear()
-                continue
-            output_dir = self.paths.outputs / record.request_id
+    def _claim_next(self):
+        # A claim can commit before its subsequent read fails. Quarantine any
+        # orphaned active row before retrying; there is no executing task here.
+        needs_recovery = False
+
+        def claim():
+            nonlocal needs_recovery
+            if needs_recovery:
+                self.store.recover_after_restart()
+                needs_recovery = False
             try:
-                message = self.supervisor.run(
-                    record.request,
-                    record.input_path,
-                    output_dir,
-                    lambda phase, request_id=record.request_id: self.store.set_phase(request_id, phase),
-                )
-                if not self.store.complete(record.request_id, message["result_path"], message["metadata_path"]):
-                    for path_key in ("result_path", "metadata_path"):
+                return self.store.claim_next()
+            except (sqlite3.Error, OSError):
+                needs_recovery = True
+                raise
+
+        return self._storage_call("领取任务", claim)
+
+    def _persist_outcome(self, outcome: dict[str, Any]) -> str:
+        request_id = outcome["request_id"]
+
+        def commit():
+            # Re-read on every attempt: a previous commit may have succeeded
+            # even if its response raised. Never delete an already-successful result.
+            for _ in range(3):
+                state = self.store.get(request_id).state
+                if state in {"succeeded", "failed", "cancelled", "interrupted"}:
+                    return state
+                if state == "cancelling":
+                    if self.store.finish_cancel(request_id):
+                        return "cancelled"
+                elif outcome["kind"] == "succeeded":
+                    message = outcome["message"]
+                    if self.store.complete(request_id, message["result_path"], message["metadata_path"]):
+                        return "succeeded"
+                elif outcome["kind"] == "cancelled" and self._closed:
+                    self.store.recover_after_restart()
+                elif self.store.fail(request_id, outcome.get("error") or "推理任务被中断"):
+                    return "failed"
+            raise RuntimeError("任务终态持续变化，无法确认提交结果")
+
+        return self._storage_call("保存任务终态", commit)
+
+    def _dispatch_loop(self) -> None:
+        try:
+            while not self._stop.is_set():
+                if self.scheduler_health["state"] == "paused":
+                    break
+                record = self._claim_next()
+                if record is None:
+                    self._wake.wait(0.5)
+                    self._wake.clear()
+                    continue
+                outcome: dict[str, Any] = {"request_id": record.request_id}
+                with self._health_guard:
+                    self._pending_outcome = {"request_id": record.request_id, "kind": "running"}
+                try:
+                    message = self.supervisor.run(
+                        record.request,
+                        record.input_path,
+                        self.paths.outputs / record.request_id,
+                        lambda phase, request_id=record.request_id: self._storage_call(
+                            "保存任务阶段", lambda: self.store.set_phase(request_id, phase)
+                        ),
+                    )
+                    outcome.update(kind="succeeded", message=message)
+                except TaskCancelled:
+                    outcome.update(kind="cancelled")
+                except _StorageUnavailable:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - isolate ordinary task failures
+                    outcome.update(kind="failed", error=str(exc))
+                with self._health_guard:
+                    self._pending_outcome = outcome
+                final_state = self._persist_outcome(outcome)
+                with self._health_guard:
+                    self._pending_outcome = None
+                if final_state == "cancelled":
+                    # A terminated worker may never report filenames. These two
+                    # task-owned paths are fixed, and a successful terminal state
+                    # never reaches this cleanup branch.
+                    output_dir = self.paths.outputs / record.request_id
+                    for filename in ("result.wav", "metadata.json"):
                         try:
-                            Path(message[path_key]).unlink(missing_ok=True)
+                            (output_dir / filename).unlink(missing_ok=True)
                         except OSError:
-                            pass
-                    self.store.finish_cancel(record.request_id)
-            except TaskCancelled:
-                self.store.finish_cancel(record.request_id)
-            except Exception as exc:  # noqa: BLE001 - task failures must be persisted instead of killing dispatch
-                if not self.store.fail(record.request_id, str(exc)):
-                    self.store.finish_cancel(record.request_id)
+                            logger.warning("无法清理已取消任务的未发布文件", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - expose dispatcher failure to health/admission
+            self._set_scheduler_state("paused", f"调度已暂停: {type(exc).__name__}: {exc}")
+            logger.error("AuK task dispatcher paused", exc_info=True)
 
     def wait(self, request_id: str, timeout: float = 600.0, poll: float = 0.25):
         deadline = time.monotonic() + timeout
@@ -284,6 +418,8 @@ class TaskManager:
             if self._closed:
                 return
             self._closed = True
+        with self._health_guard:
+            self._scheduler_state = "stopping"
         self._stop.set()
         self._wake.set()
         try:
@@ -293,3 +429,5 @@ class TaskManager:
                 self._dispatcher.join(timeout=15)
         finally:
             self._instance_lock.close()
+            with self._health_guard:
+                self._scheduler_state = "stopped"

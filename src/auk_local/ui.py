@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import sqlite3
 
 from .audio import encode_gradio_audio
 from .manager import TaskManager
@@ -84,7 +85,11 @@ def build_ui(manager: TaskManager, paths):
             "cancelling": "取消中",
         }
         rows = []
-        for record in manager.store.list_recent(20):
+        try:
+            records = manager.store.list_recent(20)
+        except (sqlite3.Error, OSError):
+            return []
+        for record in records:
             task = TASK_BY_KEY.get(str(record.request.get("task_key")))
             rows.append(
                 [
@@ -101,7 +106,21 @@ def build_ui(manager: TaskManager, paths):
     def wait_for_result(request_id, last_audio):
         last_phase = None
         while True:
-            record = manager.get(request_id)
+            try:
+                record = manager.get(request_id)
+            except (sqlite3.Error, OSError) as exc:
+                yield f"读取任务失败：{exc}。请检查磁盘或服务日志。", None, last_audio, "", request_id, last_audio, recent_rows()
+                return
+            scheduler = manager.scheduler_health
+            if record.state not in {"succeeded", "failed", "cancelled", "interrupted"} and (
+                scheduler["state"] in {"paused", "stopping", "stopped"} or scheduler["dispatcher_alive"] is False
+            ):
+                detail = scheduler["error"] or "调度不可用"
+                yield (
+                    f"任务已暂停：{detail}。请恢复存储并重启服务，然后从历史记录重试。",
+                    None, last_audio, "", request_id, last_audio, recent_rows(),
+                )
+                return
             if record.phase != last_phase:
                 last_phase = record.phase
                 yield f"任务 {request_id[:8]} · {record.phase}", None, last_audio, "", request_id, last_audio, recent_rows()
@@ -131,9 +150,9 @@ def build_ui(manager: TaskManager, paths):
             "cfg_strength": 0.0 if model_label.startswith("AuK-Flash") else 2.0,
             "client": "ui",
         }
-        if task.needs_audio and audio_value is not None:
-            payload["audio"] = encode_gradio_audio(audio_value)
         try:
+            if task.needs_audio and audio_value is not None:
+                payload["audio"] = encode_gradio_audio(audio_value)
             record, _ = manager.submit(payload)
         except Exception as exc:  # noqa: BLE001 - UI boundary reports task submission errors to the user
             yield f"提交失败：{exc}", None, last_audio, "", request_id, last_audio, recent_rows()

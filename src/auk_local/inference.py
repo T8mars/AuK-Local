@@ -82,9 +82,12 @@ class InferenceRuntime:
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         keep_loaded = bool(task.get("keep_loaded", False))
-        engine = self._load(model_key, cpu_offload, progress)
+        engine = None
+        result_path = None
+        metadata_path = None
         succeeded = False
         try:
+            engine = self._load(model_key, cpu_offload, progress)
             audio = None
             source_seconds = 0.0
             qwen_audio = None
@@ -119,6 +122,15 @@ class InferenceRuntime:
                 seed=int(task["seed"]),
             )
             progress("decoding")
+            if (
+                not torch.is_tensor(generated)
+                or generated.ndim != 2
+                or generated.numel() == 0
+                or not torch.isfinite(generated).all()
+                or not isinstance(sample_rate, int)
+                or sample_rate <= 0
+            ):
+                raise ValueError("模型输出音频为空、包含 NaN/Inf 或格式无效，请重试")
             output_dir.mkdir(parents=True, exist_ok=True)
             result_path = output_dir / "result.wav"
             metadata_path = output_dir / "metadata.json"
@@ -168,6 +180,13 @@ class InferenceRuntime:
             succeeded = True
             return {"result_path": str(result_path), "metadata_path": str(metadata_path)}
         finally:
+            if not succeeded:
+                for partial in (result_path, metadata_path):
+                    if partial is not None:
+                        try:
+                            partial.unlink(missing_ok=True)
+                        except OSError:
+                            pass
             if not keep_loaded or not succeeded:
                 del engine
                 self.unload()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ def load_or_create_token(paths: LocalPaths) -> str:
 
 def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager | None = None):
     from fastapi import Depends, FastAPI, Header, HTTPException
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, JSONResponse
 
     configure_bundled_tools(paths)
     task_manager = manager or TaskManager(paths)
@@ -41,19 +42,26 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
     app = FastAPI(title="AuK Local", version=VERSION, lifespan=lifespan)
     app.state.task_manager = task_manager
 
+    @app.exception_handler(sqlite3.Error)
+    @app.exception_handler(OSError)
+    async def storage_error(_request, exc):
+        return JSONResponse(status_code=503, content={"detail": f"本地存储暂不可用：{exc}"})
+
     def authorize(x_auk_token: str | None = Header(default=None)) -> None:
         if not x_auk_token or not secrets.compare_digest(x_auk_token, token):
             raise HTTPException(status_code=401, detail="本机服务令牌无效")
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
+        scheduler = task_manager.scheduler_health
         return {
-            "status": "ok",
+            "status": "ok" if scheduler["accepting_tasks"] else "degraded",
             "version": VERSION,
             "protocol_version": PROTOCOL_VERSION,
             "instance_id": instance_id,
             "ui_enabled": with_ui,
-            "inference_ready": all(
+            "scheduler": scheduler,
+            "inference_ready": scheduler["accepting_tasks"] and all(
                 model["status"] == "ready" for model in runtime_diagnostic(paths, probe_torch=False)["models"]
             ),
         }
@@ -68,12 +76,14 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
             record, created = task_manager.submit(payload)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {**record.public_dict(), "created": created}
 
     @app.get("/api/v1/tasks/{request_id}", dependencies=[Depends(authorize)])
     def task_status(request_id: str):
         try:
-            return task_manager.get(request_id).public_dict()
+            return {**task_manager.get(request_id).public_dict(), "scheduler": task_manager.scheduler_health}
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="任务不存在") from exc
 
@@ -83,6 +93,8 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
             return {"request_id": request_id, "state": task_manager.cancel(request_id)}
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="任务不存在") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/v1/tasks/{request_id}/retry", dependencies=[Depends(authorize)])
     def retry_task(request_id: str):
@@ -92,6 +104,8 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
             raise HTTPException(status_code=404, detail="任务不存在") from exc
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {**record.public_dict(), "created": created}
 
     @app.get("/api/v1/tasks", dependencies=[Depends(authorize)])
