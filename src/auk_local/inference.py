@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .audio import validate_duration
+from .audio import read_verified_source, validate_duration
 from .config import LocalPaths, load_model_manifest, model_paths
 from .diagnostics import model_file_issues
 from .version import VERSION
@@ -87,14 +87,14 @@ class InferenceRuntime:
         metadata_path = None
         succeeded = False
         try:
+            raw_source = read_verified_source(Path(input_path), task) if input_path else None
             engine = self._load(model_key, cpu_offload, progress)
             audio = None
             source_seconds = 0.0
             qwen_audio = None
             if input_path:
                 source_samples = array("f")
-                with open(input_path, "rb") as source_file:
-                    source_samples.fromfile(source_file, os.path.getsize(input_path) // 4)
+                source_samples.frombytes(raw_source)
                 source_rate = int(task["source_sample_rate"])
                 waveform = torch.tensor(source_samples, dtype=torch.float32).unsqueeze(0)
                 source_seconds = waveform.shape[-1] / source_rate

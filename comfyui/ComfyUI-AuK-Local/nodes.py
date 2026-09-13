@@ -190,8 +190,8 @@ class AuKLocalConnection(io.ComfyNode):
     def execute(
         cls,
         service_url: str,
-        token_file: str,
-        model: str,
+        token_file: str = "",
+        model: str = "flash",
         cpu_offload: bool = True,
         keep_loaded: bool = False,
     ) -> io.NodeOutput:
@@ -311,10 +311,11 @@ class AuKLocalGenerateEdit(io.ComfyNode):
     ) -> io.NodeOutput:
         if task not in TASK_OPTIONS:
             raise ValueError(f"未知任务：{task}")
+        task_key = TASK_KEYS[TASK_OPTIONS.index(task)]
         model = connection["model"]
         if model == "flash":
             nfe_steps, cfg_strength, sway_sampling_coef = 4, 0.0, -1.0
-        encoded_audio, source_seconds = normalize_audio(input_audio)
+        encoded_audio, source_seconds = normalize_audio(None if task_key == "instruct_tts" else input_audio)
         if source_seconds + float(generation_seconds) > 30.0 + 1e-9:
             raise ValueError(
                 f"输入 {source_seconds:.2f}s + 输出 {generation_seconds:.2f}s 超过 30s 限制"
@@ -322,7 +323,7 @@ class AuKLocalGenerateEdit(io.ComfyNode):
         client = Client(connection["service_url"], Path(connection["token_file"]))
         client.health()
         payload = {
-            "task_key": TASK_KEYS[TASK_OPTIONS.index(task)],
+            "task_key": task_key,
             "primary": primary,
             "secondary": secondary,
             "generation_seconds": float(generation_seconds),
@@ -362,10 +363,10 @@ class AuKLocalGenerateEdit(io.ComfyNode):
                     disconnected_at = disconnected_at or time.monotonic()
                     if time.monotonic() - disconnected_at > 30:
                         raise RuntimeError("AuK Local 服务断线超过 30 秒") from exc
-        except BaseException:  # noqa: BLE001 - Comfy interrupts also require remote task cancellation
+        except BaseException:  # Comfy interrupts also require remote task cancellation
             try:
                 client.json_request("POST", f"/api/v1/tasks/{request_id}/cancel", {}, timeout=5)
-            except Exception:  # noqa: BLE001 - preserve the original failure if service cancellation fails
+            except Exception:  # noqa: BLE001, S110 - preserve the original failure if service cancellation fails
                 pass
             raise
         if submitted["state"] != "succeeded":

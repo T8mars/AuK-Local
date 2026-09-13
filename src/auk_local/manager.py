@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .audio import decode_float_audio, validate_duration
+from .audio import decode_float_audio, read_verified_source, validate_duration
 from .config import LocalPaths
 from .store import TaskRecord, TaskStore
 from .task_templates import TASK_BY_KEY, build_instruction
@@ -194,7 +194,7 @@ class TaskManager:
     def normalize_request(payload: dict[str, Any]) -> dict[str, Any]:
         request_id = str(payload.get("request_id") or uuid.uuid4()).strip()
         try:
-            uuid.UUID(request_id)
+            request_id = str(uuid.UUID(request_id))
         except ValueError as exc:
             raise ValueError("request_id 必须是 UUID") from exc
         task_key = str(payload.get("task_key") or "").strip()
@@ -303,7 +303,7 @@ class TaskManager:
             input_path = Path(previous.input_path)
             if not input_path.is_file():
                 raise FileNotFoundError("原任务输入音频已被清理，无法重试")
-            raw = input_path.read_bytes()
+            raw = read_verified_source(input_path, previous.request)
             payload["audio"] = {
                 "encoding": "f32le",
                 "sample_rate": int(previous.request["source_sample_rate"]),
@@ -410,6 +410,9 @@ class TaskManager:
             record = self.get(request_id)
             if record.state in {"succeeded", "failed", "cancelled", "interrupted"}:
                 return record
+            scheduler = self.scheduler_health
+            if scheduler["state"] in {"paused", "stopping", "stopped"} or scheduler["dispatcher_alive"] is False:
+                raise RuntimeError("AuK 任务调度已暂停，请恢复存储并重启服务，再重试任务")
             time.sleep(poll)
         raise TimeoutError(f"任务等待超时：{request_id}")
 

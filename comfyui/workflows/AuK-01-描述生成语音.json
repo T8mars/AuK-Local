@@ -13,7 +13,7 @@
       "inputs": [],
       "outputs": [{"name": "连接", "type": "AUK_LOCAL_CONNECTION", "links": [1], "slot_index": 0}],
       "properties": {"Node name for S&R": "AuKLocalConnection"},
-      "widgets_values": ["http://127.0.0.1:7860", "", "flash", true, false]
+      "widgets_values": ["http://127.0.0.1:7860", "flash", "", true, false]
     },
     {
       "id": 2,
@@ -33,7 +33,7 @@
         {"name": "运行参数 JSON", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "AuKLocalGenerateEdit"},
-      "widgets_values": ["描述生成语音", "你好，欢迎使用 AuK 本地整合包。", "自然、清晰、温暖的年轻女性声音", 3.0, 42, 0, 32, 2.0, -1.0]
+      "widgets_values": ["描述生成语音", "你好，欢迎使用 AuK 本地整合包。", "自然、清晰、温暖的年轻女性声音", 3.0, 42, "fixed", 0, "increment", 32, 2.0, -1.0]
     },
     {
       "id": 3,

@@ -23,6 +23,10 @@ def download_models(
             raise ValueError(f"未知模型：{key}")
         entry = manifest[key]
         target = paths.models / entry["directory"]
+        backup = target.with_name(target.name + ".previous")
+        # Recover a swap interrupted after moving the original directory aside.
+        if backup.exists() and not target.exists():
+            os.replace(backup, target)
         missing, invalid = model_file_issues(target, entry, verify_hashes=verify_hashes)
         if target.is_dir() and not missing and not invalid:
             print(f">> 已存在并通过必需文件检查：{target}")
@@ -47,12 +51,16 @@ def download_models(
             missing, invalid = model_file_issues(temporary, entry, verify_hashes=verify_hashes)
             if missing or invalid:
                 raise RuntimeError("下载校验失败：" + ", ".join((*missing, *invalid)))
-            backup = target.with_name(target.name + ".previous")
             if backup.exists():
                 shutil.rmtree(backup)
             if target.exists():
                 os.replace(target, backup)
-            os.replace(temporary, target)
+            try:
+                os.replace(temporary, target)
+            except BaseException:
+                if backup.exists() and not target.exists():
+                    os.replace(backup, target)
+                raise
             if backup.exists():
                 shutil.rmtree(backup)
             print(f">> 完成：{target}")

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 import uuid
-import sqlite3
+from pathlib import Path
 
 from .audio import encode_gradio_audio
 from .manager import TaskManager
@@ -104,6 +106,8 @@ def build_ui(manager: TaskManager, paths):
         return rows
 
     def wait_for_result(request_id, last_audio):
+        if last_audio and not Path(last_audio).is_file():
+            last_audio = None
         last_phase = None
         while True:
             try:
@@ -128,8 +132,20 @@ def build_ui(manager: TaskManager, paths):
                 break
             time.sleep(0.25)
         if record.state == "succeeded":
-            metadata = __import__("pathlib").Path(record.metadata_path).read_text(encoding="utf-8")
-            yield "生成完成", record.result_path, last_audio, metadata, request_id, record.result_path, recent_rows()
+            if not record.result_path or not Path(record.result_path).is_file():
+                yield "结果音频不可用，可能已被清理或移动。", None, last_audio, "", request_id, last_audio, recent_rows()
+                return
+            message = "生成完成"
+            metadata = ""
+            try:
+                if not record.metadata_path:
+                    raise FileNotFoundError("参数路径缺失")
+                metadata = Path(record.metadata_path).read_text(encoding="utf-8")
+                json.loads(metadata)
+            except (OSError, ValueError):
+                message = "音频已生成，但参数文件缺失、损坏或不可读。"
+                metadata = ""
+            yield message, record.result_path, last_audio, metadata, request_id, record.result_path, recent_rows()
         else:
             yield f"任务{record.state}：{record.error or ''}", None, last_audio, "", request_id, last_audio, recent_rows()
 
@@ -167,6 +183,15 @@ def build_ui(manager: TaskManager, paths):
             return
         yield from wait_for_result(record.request_id, last_audio)
 
+    def view_task(request_id, last_audio):
+        request_id = str(request_id or "").strip()
+        try:
+            manager.get(request_id)
+        except (KeyError, sqlite3.Error, OSError) as exc:
+            yield f"读取历史任务失败：{exc}", None, None, "", "", last_audio, recent_rows()
+            return
+        yield from wait_for_result(request_id, last_audio)
+
     def cancel_task(request_id):
         if not request_id:
             return "当前没有可取消任务"
@@ -203,7 +228,7 @@ def build_ui(manager: TaskManager, paths):
                     run_button = gr.Button("开始生成", variant="primary")
                     cancel_button = gr.Button("取消当前任务")
                 with gr.Accordion("高级参数", open=False):
-                    seed = gr.Number(value=42, precision=0, label="Seed")
+                    seed = gr.Textbox(value="42", label="Seed", max_lines=1)
                     cpu_offload = gr.Checkbox(value=True, label="CPU Offload（24GB显存推荐）")
                     keep_loaded = gr.Checkbox(value=False, label="生成后保持模型驻留")
                     instruction_preview = gr.Textbox(
@@ -228,7 +253,8 @@ def build_ui(manager: TaskManager, paths):
                 wrap=True,
             )
             with gr.Row():
-                retry_request = gr.Textbox(label="要重试的任务 ID", placeholder="从历史记录复制完整任务 ID")
+                retry_request = gr.Textbox(label="历史任务 ID", placeholder="从历史记录复制完整任务 ID")
+                view_button = gr.Button("查看结果 / 状态")
                 retry_button = gr.Button("重试失败 / 取消 / 中断任务")
         task_choice.change(
             update_task,
@@ -246,8 +272,14 @@ def build_ui(manager: TaskManager, paths):
         )
         cancel_button.click(cancel_task, current_request, status, queue=False)
         refresh_history.click(recent_rows, outputs=history, queue=False)
+        demo.load(recent_rows, outputs=history, queue=False)
         retry_button.click(
             retry_task,
+            [retry_request, last_audio],
+            [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
+        )
+        view_button.click(
+            view_task,
             [retry_request, last_audio],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )

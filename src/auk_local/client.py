@@ -87,6 +87,9 @@ class LocalClient:
             result = self.status(request_id)
             if result["state"] in {"succeeded", "failed", "cancelled", "interrupted"}:
                 return result
+            scheduler = result.get("scheduler", {})
+            if scheduler.get("state") in {"paused", "stopping", "stopped"} or scheduler.get("dispatcher_alive") is False:
+                raise RuntimeError("AuK 任务调度已暂停，请恢复存储并重启服务，再重试任务")
             time.sleep(poll)
         raise TimeoutError(f"任务等待超时：{request_id}")
 

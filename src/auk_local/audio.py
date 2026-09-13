@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import math
 from array import array
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -14,6 +16,17 @@ class FloatAudio:
     @property
     def duration_seconds(self) -> float:
         return len(self.samples) / self.sample_rate
+
+
+def read_verified_source(path: Path, request: dict) -> bytes:
+    raw = path.read_bytes()
+    if (
+        not raw
+        or len(raw) != int(request["source_frames"]) * 4
+        or hashlib.sha256(raw).hexdigest() != request["source_sha256"]
+    ):
+        raise ValueError("输入音频校验失败，文件已损坏或被修改，请重新上传")
+    return raw
 
 
 def encode_float_audio(samples, sample_rate: int) -> dict[str, object]:

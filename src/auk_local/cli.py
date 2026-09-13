@@ -69,6 +69,7 @@ def main() -> None:
             port=args.port,
             log_level="info",
             access_log=False,
+            timeout_graceful_shutdown=5,
         )
 
 

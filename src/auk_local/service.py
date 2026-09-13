@@ -142,7 +142,10 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
             raise HTTPException(status_code=410, detail="任务参数尚不可用或已清理")
         import json
 
-        return json.loads(Path(record.metadata_path).read_text(encoding="utf-8"))
+        try:
+            return json.loads(Path(record.metadata_path).read_text(encoding="utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            raise HTTPException(status_code=410, detail="任务参数文件已损坏，请检查输出目录") from exc
 
     if with_ui:
         import gradio as gr

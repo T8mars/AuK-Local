@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$ComfyUIRoot)
 $ErrorActionPreference = "Stop"
-$packageRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$packageRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $source = Join-Path $packageRoot "comfyui\ComfyUI-AuK-Local"
 $customNodes = Join-Path $ComfyUIRoot "custom_nodes"
 if (-not (Test-Path -LiteralPath $customNodes -PathType Container)) {
