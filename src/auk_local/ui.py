@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import time
 import uuid
-from array import array
 
+from .audio import encode_gradio_audio
 from .manager import TaskManager
-from .task_templates import TASKS, TASK_BY_KEY, TASK_BY_LABEL, build_instruction
+from .task_templates import TASK_BY_KEY, TASK_BY_LABEL, TASKS, build_instruction
 
 
 CSS = """
@@ -25,7 +24,8 @@ body, .gradio-container { background: #f8fafc !important; color: #0f172a !import
 .auk-model-status { margin: 0 0 14px; padding: 11px 14px; border: 1px solid #e2e8f0; border-radius: 12px;
   background: rgba(255,255,255,.86); color: #475569; }
 .auk-model-status strong { color: #0f172a; }
-.auk-actions { position: fixed !important; left: 50%; bottom: 12px; transform: translateX(-50%); width: min(1160px, calc(100% - 32px));
+.auk-actions { position: fixed !important; left: 50%; bottom: 12px; transform: translateX(-50%);
+  width: min(1160px, calc(100% - 32px));
   z-index: 20; padding: 10px !important; border: 1px solid rgba(251,114,153,.25); border-radius: 14px;
   background: rgba(255,255,255,.94); box-shadow: 0 8px 28px rgba(15,23,42,.12); backdrop-filter: blur(12px); }
 """
@@ -38,12 +38,30 @@ def build_ui(manager: TaskManager, paths):
 
     task_labels = [task.label for task in TASKS]
 
-    def update_task(label):
+    def budget_html(label, audio_value, duration):
+        task = TASK_BY_LABEL[label]
+        source_seconds = 0.0
+        if task.needs_audio and audio_value is not None:
+            sample_rate, samples = audio_value
+            if sample_rate:
+                source_seconds = len(samples) / float(sample_rate)
+        target_seconds = float(duration or 0)
+        total = source_seconds + target_seconds
+        remaining = max(0.0, 30.0 - total)
+        state = "可提交" if total <= 30.0 + 1e-9 else "已超出限制"
+        return (
+            "<div class='auk-budget'>30 秒预算："
+            f"输入 {source_seconds:.2f}s + 输出 {target_seconds:.2f}s = {total:.2f}s"
+            f" · 剩余 {remaining:.2f}s · {state}</div>"
+        )
+
+    def update_task(label, audio_value, duration):
         task = TASK_BY_LABEL[label]
         return (
             gr.update(label=task.primary_label),
             gr.update(label=task.secondary_label),
             gr.update(label="参考声音" if task.key == "zero_shot_tts" else "待处理音频", visible=task.needs_audio),
+            budget_html(label, audio_value, duration),
         )
 
     def preview_instruction(label, primary, secondary):
@@ -113,20 +131,11 @@ def build_ui(manager: TaskManager, paths):
             "cfg_strength": 0.0 if model_label.startswith("AuK-Flash") else 2.0,
             "client": "ui",
         }
-        if audio_value is not None:
-            sample_rate, samples = audio_value
-            if getattr(samples, "ndim", 1) == 2:
-                samples = samples.mean(axis=1)
-            payload["audio"] = {
-                "encoding": "f32le",
-                "sample_rate": int(sample_rate),
-                "channels": 1,
-                "frames": int(len(samples)),
-                "data": __import__("base64").b64encode(array("f", samples).tobytes()).decode("ascii"),
-            }
+        if task.needs_audio and audio_value is not None:
+            payload["audio"] = encode_gradio_audio(audio_value)
         try:
             record, _ = manager.submit(payload)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports task submission errors to the user
             yield f"提交失败：{exc}", None, last_audio, "", request_id, last_audio, recent_rows()
             return
         yield from wait_for_result(record.request_id, last_audio)
@@ -134,7 +143,7 @@ def build_ui(manager: TaskManager, paths):
     def retry_task(request_id, last_audio):
         try:
             record, _ = manager.retry(str(request_id or "").strip())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports retry errors to the user
             yield f"重试失败：{exc}", None, last_audio, "", "", last_audio, recent_rows()
             return
         yield from wait_for_result(record.request_id, last_audio)
@@ -145,7 +154,7 @@ def build_ui(manager: TaskManager, paths):
         try:
             state = manager.cancel(request_id)
             return f"取消请求：{state}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports cancellation errors to the user
             return f"取消失败：{exc}"
 
     model_diagnostics = inspect_models(paths)
@@ -164,9 +173,10 @@ def build_ui(manager: TaskManager, paths):
         with gr.Row():
             with gr.Column(scale=6):
                 task_choice = gr.Dropdown(task_labels, value=task_labels[0], label="任务类型")
-                primary = gr.Textbox(label=TASKS[0].primary_label, lines=4)
-                secondary = gr.Textbox(label=TASKS[0].secondary_label, lines=3)
+                primary = gr.Textbox(label=TASKS[0].primary_label, lines=4, value="你好，欢迎使用 AuK。")
+                secondary = gr.Textbox(label=TASKS[0].secondary_label, lines=3, value="自然、清晰、温暖")
                 source_audio = gr.Audio(label="待处理音频", type="numpy", visible=False)
+                budget = gr.HTML(budget_html(task_labels[0], None, 3.0))
                 with gr.Row():
                     duration = gr.Slider(0.2, 30.0, value=3.0, step=0.1, label="目标时长（秒）")
                     model = gr.Dropdown(["AuK-Flash（推荐）", "AuK Base"], value="AuK-Flash（推荐）", label="模型")
@@ -201,7 +211,13 @@ def build_ui(manager: TaskManager, paths):
             with gr.Row():
                 retry_request = gr.Textbox(label="要重试的任务 ID", placeholder="从历史记录复制完整任务 ID")
                 retry_button = gr.Button("重试失败 / 取消 / 中断任务")
-        task_choice.change(update_task, task_choice, [primary, secondary, source_audio])
+        task_choice.change(
+            update_task,
+            [task_choice, source_audio, duration],
+            [primary, secondary, source_audio, budget],
+        )
+        source_audio.change(budget_html, [task_choice, source_audio, duration], budget)
+        duration.change(budget_html, [task_choice, source_audio, duration], budget)
         for component in (task_choice, primary, secondary):
             component.change(preview_instruction, [task_choice, primary, secondary], instruction_preview)
         run_button.click(

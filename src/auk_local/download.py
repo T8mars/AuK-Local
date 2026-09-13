@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
-from pathlib import Path
 
 from .config import LocalPaths, load_model_manifest
 from .diagnostics import model_file_issues

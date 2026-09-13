@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
+import math
 import os
 import threading
 import time
@@ -17,14 +17,101 @@ from .task_templates import TASK_BY_KEY, build_instruction
 from .worker import TaskCancelled, WorkerSupervisor
 
 
+class _SingleInstanceLock:
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = path.open("a+b")
+        try:
+            self._handle.seek(0, os.SEEK_END)
+            if self._handle.tell() == 0:
+                self._handle.write(b"\0")
+                self._handle.flush()
+            self._handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            self._handle.close()
+            self._handle = None
+            raise RuntimeError("另一个 AuK Local 服务正在使用这个整合包") from exc
+
+    def close(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        self._handle = None
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
+
+
+def _finite_float(value: Any, field: str) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{field} 必须是数字")
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} 必须是数字") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{field} 必须是有限数字")
+    return result
+
+
+def _integer(value: Any, field: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{field} 必须是整数")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip(), 10)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} 必须是整数") from exc
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{field} 必须是有限整数")
+        if value.is_integer():
+            return int(value)
+    raise ValueError(f"{field} 必须是整数")
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field} 必须是布尔值")
+    return value
+
+
 class TaskManager:
     def __init__(self, paths: LocalPaths, *, start_worker: bool = True):
         self.paths = paths
         paths.ensure_writable_dirs()
+        self._instance_lock = _SingleInstanceLock(paths.data / "task-manager.lock")
+        self._close_guard = threading.Lock()
+        self._closed = False
         self.task_files = paths.data / "tasks"
         self.task_files.mkdir(parents=True, exist_ok=True)
-        self.store = TaskStore(paths.data / "tasks.db")
-        self.store.recover_after_restart()
+        try:
+            self.store = TaskStore(paths.data / "tasks.db")
+            self.store.rebase_managed_paths(paths)
+            self.store.recover_after_restart()
+        except BaseException:
+            self._instance_lock.close()
+            raise
         self._submit_lock = threading.Lock()
         self.supervisor = WorkerSupervisor(paths) if start_worker else None
         self._stop = threading.Event()
@@ -50,17 +137,25 @@ class TaskManager:
         primary = str(payload.get("primary") or "").strip()
         secondary = str(payload.get("secondary") or "").strip()
         instruction = str(payload.get("instruction") or "").strip() or build_instruction(task_key, primary, secondary)
-        generation_seconds = float(payload.get("generation_seconds", 0))
+        generation_seconds = _finite_float(payload.get("generation_seconds", 0), "generation_seconds")
         if generation_seconds <= 0 or generation_seconds > 30:
             raise ValueError("generation_seconds 必须在 0 到 30 秒之间")
-        seed = int(payload.get("seed", 42))
+        seed = _integer(payload.get("seed", 42), "seed")
         if seed < 0 or seed > 0x7FFFFFFFFFFFFFFF:
             raise ValueError("seed 超出范围")
-        nfe = int(payload.get("nfe_steps", 4 if model == "flash" else 32))
-        cfg = float(payload.get("cfg_strength", 0.0 if model == "flash" else 2.0))
-        sway = float(payload.get("sway_sampling_coef", -1.0))
+        nfe = _integer(payload.get("nfe_steps", 4 if model == "flash" else 32), "nfe_steps")
+        cfg = _finite_float(payload.get("cfg_strength", 0.0 if model == "flash" else 2.0), "cfg_strength")
+        sway = _finite_float(payload.get("sway_sampling_coef", -1.0), "sway_sampling_coef")
+        if nfe < 4 or nfe > 64:
+            raise ValueError("nfe_steps 必须在 4 到 64 之间")
+        if cfg < 0.0 or cfg > 5.0:
+            raise ValueError("cfg_strength 必须在 0 到 5 之间")
+        if sway < -1.0 or sway > 1.0:
+            raise ValueError("sway_sampling_coef 必须在 -1 到 1 之间")
         if model == "flash" and (nfe != 4 or cfg != 0.0 or sway != -1.0):
             raise ValueError("AuK-Flash 固定使用 NFE=4、CFG=0、sway=-1 占位")
+        cpu_offload = _boolean(payload.get("cpu_offload", True), "cpu_offload")
+        keep_loaded = _boolean(payload.get("keep_loaded", False), "keep_loaded")
         return {
             "request_id": request_id,
             "task_key": task_key,
@@ -73,8 +168,8 @@ class TaskManager:
             "nfe_steps": nfe,
             "cfg_strength": cfg,
             "sway_sampling_coef": sway,
-            "cpu_offload": bool(payload.get("cpu_offload", True)),
-            "keep_loaded": bool(payload.get("keep_loaded", False)),
+            "cpu_offload": cpu_offload,
+            "keep_loaded": keep_loaded,
             "client": str(payload.get("client") or "api")[:32],
         }
 
@@ -160,7 +255,7 @@ class TaskManager:
                     record.request,
                     record.input_path,
                     output_dir,
-                    lambda phase: self.store.set_phase(record.request_id, phase),
+                    lambda phase, request_id=record.request_id: self.store.set_phase(request_id, phase),
                 )
                 if not self.store.complete(record.request_id, message["result_path"], message["metadata_path"]):
                     for path_key in ("result_path", "metadata_path"):
@@ -168,10 +263,12 @@ class TaskManager:
                             Path(message[path_key]).unlink(missing_ok=True)
                         except OSError:
                             pass
+                    self.store.finish_cancel(record.request_id)
             except TaskCancelled:
                 self.store.finish_cancel(record.request_id)
-            except Exception as exc:
-                self.store.fail(record.request_id, str(exc))
+            except Exception as exc:  # noqa: BLE001 - task failures must be persisted instead of killing dispatch
+                if not self.store.fail(record.request_id, str(exc)):
+                    self.store.finish_cancel(record.request_id)
 
     def wait(self, request_id: str, timeout: float = 600.0, poll: float = 0.25):
         deadline = time.monotonic() + timeout
@@ -183,9 +280,16 @@ class TaskManager:
         raise TimeoutError(f"任务等待超时：{request_id}")
 
     def close(self) -> None:
+        with self._close_guard:
+            if self._closed:
+                return
+            self._closed = True
         self._stop.set()
         self._wake.set()
-        if self._dispatcher is not None:
-            self._dispatcher.join(timeout=5)
-        if self.supervisor is not None:
-            self.supervisor.close()
+        try:
+            if self.supervisor is not None:
+                self.supervisor.close()
+            if self._dispatcher is not None:
+                self._dispatcher.join(timeout=15)
+        finally:
+            self._instance_lock.close()

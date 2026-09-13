@@ -108,7 +108,7 @@ def runtime_diagnostic(
                     ),
                 }
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - diagnostics must still render when torch loading fails
             result["torch"]["load_error"] = f"{type(exc).__name__}: {exc}"
     return result
 

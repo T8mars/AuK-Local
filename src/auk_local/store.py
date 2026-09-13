@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .config import LocalPaths
+
 
 ACTIVE_STATES = ("loading", "encoding", "sampling", "decoding", "saving", "cancelling")
 FINAL_STATES = ("succeeded", "failed", "cancelled", "interrupted")
@@ -133,7 +135,8 @@ class TaskStore:
     def set_phase(self, request_id: str, phase: str) -> bool:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE tasks SET state=?, phase=?, updated_at=? WHERE request_id=? AND state NOT IN ('succeeded','failed','cancelled','interrupted','cancelling')",
+                """UPDATE tasks SET state=?, phase=?, updated_at=? WHERE request_id=?
+                AND state NOT IN ('succeeded','failed','cancelled','interrupted','cancelling')""",
                 (phase, phase, time.time(), request_id),
             )
             return cursor.rowcount == 1
@@ -150,10 +153,32 @@ class TaskStore:
     def fail(self, request_id: str, error: str) -> bool:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE tasks SET state='failed', phase='failed', error=?, updated_at=? WHERE request_id=? AND state NOT IN ('succeeded','cancelled')",
+                """UPDATE tasks SET state='failed', phase='failed', error=?, updated_at=?
+                WHERE request_id=? AND state IN ('queued','loading','encoding','sampling','decoding','saving')""",
                 (error, time.time(), request_id),
             )
             return cursor.rowcount == 1
+
+    def rebase_managed_paths(self, paths: LocalPaths) -> int:
+        """Repair task-owned absolute paths after the package is moved."""
+        changed = 0
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT request_id, input_path, result_path, metadata_path FROM tasks"
+            ).fetchall()
+            for row in rows:
+                values = (
+                    str(paths.data / "tasks" / row["request_id"] / "input.f32") if row["input_path"] else None,
+                    str(paths.outputs / row["request_id"] / "result.wav") if row["result_path"] else None,
+                    str(paths.outputs / row["request_id"] / "metadata.json") if row["metadata_path"] else None,
+                )
+                if values != (row["input_path"], row["result_path"], row["metadata_path"]):
+                    connection.execute(
+                        "UPDATE tasks SET input_path=?, result_path=?, metadata_path=? WHERE request_id=?",
+                        (*values, row["request_id"]),
+                    )
+                    changed += 1
+        return changed
 
     def cancel(self, request_id: str) -> str:
         with self._lock, self._connect() as connection:
@@ -193,7 +218,8 @@ class TaskStore:
         placeholders = ",".join("?" for _ in ACTIVE_STATES)
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                f"UPDATE tasks SET state='interrupted', phase='interrupted', error='服务重启中断了运行任务', updated_at=? WHERE state IN ({placeholders})",
+                f"""UPDATE tasks SET state='interrupted', phase='interrupted',
+                error='服务重启中断了运行任务', updated_at=? WHERE state IN ({placeholders})""",
                 (time.time(), *ACTIVE_STATES),
             )
             return cursor.rowcount

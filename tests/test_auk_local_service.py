@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from auk_local.config import LocalPaths
@@ -82,3 +83,57 @@ def test_recent_tasks_and_retry_failed_task(tmp_path):
         assert retried.status_code == 200
         assert retried.json()["request_id"] != request_id
         assert retried.json()["state"] == "queued"
+
+
+def test_invalid_types_and_sampling_ranges_return_422(tmp_path):
+    paths = LocalPaths.from_root(tmp_path)
+    manager = TaskManager(paths, start_worker=False)
+    token = load_or_create_token(paths)
+    headers = {"X-AuK-Token": token}
+    base = {
+        "request_id": str(uuid.uuid4()),
+        "task_key": "instruct_tts",
+        "primary": "校验",
+        "generation_seconds": 1.0,
+        "model": "base",
+    }
+    invalid_payloads = [
+        {**base, "request_id": str(uuid.uuid4()), "generation_seconds": None},
+        {**base, "request_id": str(uuid.uuid4()), "nfe_steps": -7},
+        {**base, "request_id": str(uuid.uuid4()), "cfg_strength": -999},
+        {
+            **base,
+            "request_id": str(uuid.uuid4()),
+            "task_key": "zero_shot_tts",
+            "audio": "not-an-object",
+        },
+        {
+            **base,
+            "request_id": str(uuid.uuid4()),
+            "task_key": "zero_shot_tts",
+            "audio": {"encoding": "f32le", "sample_rate": None, "channels": 1, "frames": 1, "data": "AAAAAA=="},
+        },
+    ]
+    with TestClient(create_app(paths, with_ui=False, manager=manager)) as client:
+        for payload in invalid_payloads:
+            response = client.post("/api/v1/tasks", json=payload, headers=headers)
+            assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize("seed", [9_007_199_254_740_993, 9_223_372_036_854_775_807])
+def test_seed_keeps_full_integer_precision(tmp_path, seed):
+    paths = LocalPaths.from_root(tmp_path)
+    manager = TaskManager(paths, start_worker=False)
+    try:
+        normalized = manager.normalize_request(
+            {
+                "request_id": str(uuid.uuid4()),
+                "task_key": "instruct_tts",
+                "primary": "整数精度",
+                "generation_seconds": 1,
+                "seed": seed,
+            }
+        )
+        assert normalized["seed"] == seed
+    finally:
+        manager.close()

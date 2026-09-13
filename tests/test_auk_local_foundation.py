@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import urllib.request
 from array import array
+from pathlib import Path
 
+import numpy as np
 import pytest
 
-from auk_local.audio import decode_float_audio, encode_float_audio, validate_duration
-from auk_local.config import LocalPaths
+from auk_local.audio import decode_float_audio, encode_float_audio, encode_gradio_audio, validate_duration
+from auk_local.client import LocalClient, validate_loopback_url
+from auk_local.config import LocalPaths, default_home
 from auk_local.diagnostics import inspect_models
 from auk_local.task_templates import TASKS, build_instruction
 
@@ -22,6 +26,36 @@ def test_float_audio_round_trip_is_lossless():
     decoded = decode_float_audio(encode_float_audio(original, 24_000))
     assert decoded.sample_rate == 24_000
     assert decoded.samples.tolist() == original.tolist()
+
+
+def test_gradio_int16_audio_is_normalized_before_submission():
+    source = np.array([0, 16_384, -16_384], dtype=np.int16)
+    decoded = decode_float_audio(encode_gradio_audio((24_000, source)))
+    assert decoded.samples.tolist() == pytest.approx([0.0, 0.5, -0.5])
+
+
+def test_default_home_is_the_package_root(monkeypatch):
+    monkeypatch.delenv("AUK_LOCAL_HOME", raising=False)
+    assert default_home() == Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:7860", "http://localhost:7860", "http://[::1]:7860"],
+)
+def test_client_accepts_only_loopback_http(url):
+    assert validate_loopback_url(url) == url
+    with pytest.raises(ValueError, match="loopback"):
+        validate_loopback_url("https://example.invalid")
+
+
+def test_client_disables_environment_proxies(tmp_path, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    token = tmp_path / "token"
+    token.write_text("test", encoding="utf-8")
+    client = LocalClient("http://127.0.0.1:7860", token)
+    proxy_handlers = [handler for handler in client._opener.handlers if isinstance(handler, urllib.request.ProxyHandler)]
+    assert not any(handler.proxies for handler in proxy_handlers)
 
 
 def test_duration_budget_rejects_overflow():

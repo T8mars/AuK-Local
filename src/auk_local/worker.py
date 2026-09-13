@@ -3,8 +3,9 @@ from __future__ import annotations
 import multiprocessing as mp
 import queue
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import LocalPaths
 
@@ -34,10 +35,12 @@ def worker_main(input_queue, output_queue, root: str) -> None:
                 command["task"],
                 command.get("input_path"),
                 Path(command["output_dir"]),
-                lambda phase: output_queue.put({"type": "phase", "request_id": request_id, "phase": phase}),
+                lambda phase, request_id=request_id: output_queue.put(
+                    {"type": "phase", "request_id": request_id, "phase": phase}
+                ),
             )
             output_queue.put({"type": "done", "request_id": request_id, **result})
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - child must report interrupts and fatal task errors
             output_queue.put(
                 {"type": "error", "request_id": request_id, "error": f"{type(exc).__name__}: {exc}"}
             )
@@ -54,9 +57,12 @@ class WorkerSupervisor:
         self._process = None
         self._input = None
         self._output = None
+        self._closed = False
         self._start_worker()
 
     def _start_worker(self) -> None:
+        if self._closed:
+            raise RuntimeError("推理 worker 已关闭")
         self._input = self.context.Queue()
         self._output = self.context.Queue()
         self._process = self.context.Process(
@@ -68,15 +74,33 @@ class WorkerSupervisor:
         self._process.start()
 
     def _restart_worker(self) -> None:
-        if self._process is not None and self._process.is_alive():
-            self._process.terminate()
+        if self._closed:
+            return
+        if self._process is not None:
+            if self._process.is_alive():
+                self._process.terminate()
             self._process.join(timeout=10)
+        self._close_queues()
         self._start_worker()
+
+    def _close_queues(self) -> None:
+        for channel in (self._input, self._output):
+            if channel is None:
+                continue
+            try:
+                channel.close()
+                channel.cancel_join_thread()
+            except (OSError, ValueError):
+                pass
+        self._input = None
+        self._output = None
 
     def run(self, task: dict[str, Any], input_path: str | None, output_dir: Path, on_phase: Callable[[str], None]):
         with self._run_lock:
             request_id = task["request_id"]
             with self._guard:
+                if self._closed:
+                    raise RuntimeError("推理 worker 已关闭")
                 self._current_id = request_id
                 self._cancel_event.clear()
                 if not self._process.is_alive():
@@ -88,11 +112,13 @@ class WorkerSupervisor:
                 while True:
                     if self._cancel_event.is_set():
                         with self._guard:
-                            self._restart_worker()
+                            if not self._closed:
+                                self._restart_worker()
                         raise TaskCancelled(request_id)
                     if not self._process.is_alive():
                         with self._guard:
-                            self._restart_worker()
+                            if not self._closed:
+                                self._restart_worker()
                         raise RuntimeError("推理 worker 意外退出")
                     try:
                         message = self._output.get(timeout=0.2)
@@ -113,18 +139,24 @@ class WorkerSupervisor:
 
     def cancel(self, request_id: str) -> bool:
         with self._guard:
-            if self._current_id != request_id:
+            if self._closed or self._current_id != request_id:
                 return False
             self._cancel_event.set()
             return True
 
     def close(self) -> None:
         with self._guard:
-            if self._process is None:
+            if self._closed:
                 return
-            if self._process.is_alive():
+            self._closed = True
+            self._cancel_event.set()
+            process = self._process
+            if process is not None and process.is_alive():
                 self._input.put({"type": "shutdown"})
-                self._process.join(timeout=10)
-            if self._process.is_alive():
-                self._process.terminate()
-                self._process.join(timeout=10)
+                process.join(timeout=10)
+            if process is not None and process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+            elif process is not None:
+                process.join(timeout=10)
+            self._close_queues()

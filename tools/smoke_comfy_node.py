@@ -8,6 +8,9 @@ from pathlib import Path
 
 
 def load_node_module(comfy_root: Path):
+    comfy_root_string = str(comfy_root)
+    if comfy_root_string not in sys.path:
+        sys.path.insert(0, comfy_root_string)
     node_init = comfy_root / "custom_nodes" / "ComfyUI-AuK-Local" / "__init__.py"
     module_name = "comfyui_auk_local_smoke"
     spec = importlib.util.spec_from_file_location(

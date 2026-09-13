@@ -3,10 +3,10 @@ from __future__ import annotations
 import base64
 import io as bytes_io
 import json
-import math
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -57,6 +57,37 @@ TASK_KEYS = [
 ]
 
 
+class HttpResponseError(RuntimeError):
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(f"AuK Local HTTP {status_code}: {detail}")
+        self.status_code = status_code
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "AuK Local 不接受 HTTP 重定向", headers, fp)
+
+
+def validate_loopback_url(base_url: str) -> str:
+    candidate = str(base_url or "").rstrip("/")
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("AuK Local 服务地址无效") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("AuK Local 服务地址只能是本机 loopback HTTP 地址")
+    return candidate
+
+
 def resolve_token_file(setting: str) -> Path:
     if setting.strip():
         return Path(os.path.expandvars(setting)).expanduser().resolve()
@@ -69,14 +100,18 @@ def resolve_token_file(setting: str) -> Path:
     config_file = Path(__file__).with_name("auk-local-config.json")
     if config_file.is_file():
         config = json.loads(config_file.read_text(encoding="utf-8"))
-        return Path(config["token_file"]).expanduser().resolve()
+        configured = Path(config["token_file"]).expanduser()
+        if not configured.is_absolute():
+            configured = config_file.parent / configured
+        return configured.resolve()
     raise ValueError("找不到 AuK Local 服务令牌；请运行整合包里的“安装ComfyUI节点.cmd”")
 
 
 class Client:
     def __init__(self, base_url: str, token_file: Path):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = validate_loopback_url(base_url)
         self.token_file = token_file
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "X-AuK-Token": self.token_file.read_text(encoding="utf-8").strip()}
@@ -89,14 +124,14 @@ class Client:
             headers=self._headers(),
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self._opener.open(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"AuK Local HTTP {exc.code}: {detail}") from exc
+            raise HttpResponseError(exc.code, detail) from exc
 
     def health(self):
-        with urllib.request.urlopen(self.base_url + "/api/v1/health", timeout=5) as response:
+        with self._opener.open(self.base_url + "/api/v1/health", timeout=5) as response:
             health = json.loads(response.read().decode("utf-8"))
         if str(health.get("protocol_version", "")).split(".")[0] != PROTOCOL_VERSION.split(".")[0]:
             raise RuntimeError(f"协议不兼容：节点 {PROTOCOL_VERSION}，服务 {health.get('protocol_version')}")
@@ -104,8 +139,27 @@ class Client:
 
     def download(self, path: str, timeout: float = 60) -> bytes:
         request = urllib.request.Request(self.base_url + path, headers=self._headers())
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with self._opener.open(request, timeout=timeout) as response:
             return response.read()
+
+
+def submit_with_recovery(client: Client, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    last_error: BaseException | None = None
+    for attempt in range(3):
+        try:
+            return client.json_request("POST", "/api/v1/tasks", payload)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            last_error = exc
+            try:
+                return client.json_request("GET", f"/api/v1/tasks/{request_id}", timeout=10)
+            except HttpResponseError as status_error:
+                if status_error.status_code != 404:
+                    raise
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+                pass
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError(f"提交 AuK 任务后无法确认服务状态：{last_error}") from last_error
 
 
 class AuKLocalConnection(io.ComfyNode):
@@ -184,7 +238,7 @@ def normalize_audio(audio: dict | None) -> tuple[dict[str, Any] | None, float]:
 
 def check_interrupted() -> None:
     try:
-        import comfy.model_management as model_management
+        from comfy import model_management
 
         model_management.throw_exception_if_processing_interrupted()
     except ModuleNotFoundError:
@@ -255,7 +309,6 @@ class AuKLocalGenerateEdit(io.ComfyNode):
         cfg_strength: float = 2.0,
         sway_sampling_coef: float = -1.0,
     ) -> io.NodeOutput:
-        del refresh
         if task not in TASK_OPTIONS:
             raise ValueError(f"未知任务：{task}")
         model = connection["model"]
@@ -268,9 +321,7 @@ class AuKLocalGenerateEdit(io.ComfyNode):
             )
         client = Client(connection["service_url"], Path(connection["token_file"]))
         client.health()
-        request_id = str(uuid.uuid4())
         payload = {
-            "request_id": request_id,
             "task_key": TASK_KEYS[TASK_OPTIONS.index(task)],
             "primary": primary,
             "secondary": secondary,
@@ -285,13 +336,24 @@ class AuKLocalGenerateEdit(io.ComfyNode):
             "client": "comfyui",
             "audio": encoded_audio,
         }
-        submitted = client.json_request("POST", "/api/v1/tasks", payload)
+        # One node execution owns one remote task. Network retries below keep this
+        # ID, while separate workflow executions cannot cancel or reuse each other.
+        request_id = str(uuid.uuid4())
+        payload["request_id"] = request_id
         try:
+            submitted = submit_with_recovery(client, request_id, payload)
+            disconnected_at = None
             while submitted["state"] not in {"succeeded", "failed", "cancelled", "interrupted"}:
                 check_interrupted()
                 time.sleep(0.4)
-                submitted = client.json_request("GET", f"/api/v1/tasks/{request_id}", timeout=10)
-        except BaseException:
+                try:
+                    submitted = client.json_request("GET", f"/api/v1/tasks/{request_id}", timeout=10)
+                    disconnected_at = None
+                except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                    disconnected_at = disconnected_at or time.monotonic()
+                    if time.monotonic() - disconnected_at > 30:
+                        raise RuntimeError("AuK Local 服务断线超过 30 秒") from exc
+        except BaseException:  # noqa: BLE001 - Comfy interrupts also require remote task cancellation
             try:
                 client.json_request("POST", f"/api/v1/tasks/{request_id}/cancel", {}, timeout=5)
             finally:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,36 @@ from typing import Any
 from .version import PROTOCOL_VERSION
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "AuK Local 不接受 HTTP 重定向", headers, fp)
+
+
+def validate_loopback_url(base_url: str) -> str:
+    candidate = str(base_url or "").rstrip("/")
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("AuK Local 服务地址无效") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("AuK Local 服务地址只能是本机 loopback HTTP 地址")
+    return candidate
+
+
 class LocalClient:
     def __init__(self, base_url: str, token_file: str | Path):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = validate_loopback_url(base_url)
         self.token_file = Path(token_file)
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def _token(self) -> str:
         token = self.token_file.read_text(encoding="utf-8").strip()
@@ -30,14 +57,14 @@ class LocalClient:
             headers={"Content-Type": "application/json", "X-AuK-Token": self._token()},
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self._opener.open(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"AuK 本机服务返回 {exc.code}：{body}") from exc
 
     def health(self) -> dict[str, Any]:
-        with urllib.request.urlopen(self.base_url + "/api/v1/health", timeout=5) as response:
+        with self._opener.open(self.base_url + "/api/v1/health", timeout=5) as response:
             result = json.loads(response.read().decode("utf-8"))
         server_protocol = str(result.get("protocol_version", ""))
         if server_protocol.split(".")[0] != PROTOCOL_VERSION.split(".")[0]:
@@ -68,7 +95,7 @@ class LocalClient:
             self.base_url + f"/api/v1/tasks/{request_id}/audio",
             headers={"X-AuK-Token": self._token()},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with self._opener.open(request, timeout=timeout) as response:
             return response.read()
 
     def metadata(self, request_id: str) -> dict[str, Any]:

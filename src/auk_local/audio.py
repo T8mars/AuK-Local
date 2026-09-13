@@ -33,14 +33,51 @@ def encode_float_audio(samples, sample_rate: int) -> dict[str, object]:
     }
 
 
+def encode_gradio_audio(audio_value) -> dict[str, object]:
+    """Convert Gradio's numpy audio tuple to normalized mono float PCM."""
+    if not isinstance(audio_value, (tuple, list)) or len(audio_value) != 2:
+        raise ValueError("Gradio 音频格式无效")
+    sample_rate, samples = audio_value
+
+    import numpy as np
+
+    values = np.asarray(samples)
+    if values.ndim not in {1, 2} or values.size == 0:
+        raise ValueError("输入音频为空或声道格式无效")
+    if np.issubdtype(values.dtype, np.signedinteger):
+        info = np.iinfo(values.dtype)
+        scale = float(max(abs(info.min), abs(info.max)))
+        values = values.astype(np.float32) / scale
+    elif np.issubdtype(values.dtype, np.unsignedinteger):
+        info = np.iinfo(values.dtype)
+        midpoint = float(info.max + 1) / 2.0
+        values = (values.astype(np.float32) - midpoint) / midpoint
+    elif np.issubdtype(values.dtype, np.floating):
+        values = values.astype(np.float32, copy=False)
+    else:
+        raise ValueError(f"不支持的音频数据类型：{values.dtype}")
+    if values.ndim == 2:
+        values = values.mean(axis=1, dtype=np.float32)
+    return encode_float_audio(values, int(sample_rate))
+
+
 def decode_float_audio(payload: dict[str, object]) -> FloatAudio:
+    if not isinstance(payload, dict):
+        raise TypeError("audio 必须是对象")
     if payload.get("encoding") != "f32le":
         raise ValueError("only f32le audio is supported")
-    sample_rate = int(payload.get("sample_rate", 0))
-    channels = int(payload.get("channels", 0))
-    frames = int(payload.get("frames", 0))
+    try:
+        sample_rate = int(payload.get("sample_rate", 0))
+        channels = int(payload.get("channels", 0))
+        frames = int(payload.get("frames", 0))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("invalid audio shape or sample rate") from exc
     if sample_rate <= 0 or channels != 1 or frames <= 0:
         raise ValueError("invalid audio shape or sample rate")
+    if sample_rate < 8_000 or sample_rate > 192_000:
+        raise ValueError("audio sample_rate 必须在 8000 到 192000 之间")
+    if frames > sample_rate * 30:
+        raise ValueError("输入音频不能超过 30 秒")
     raw = base64.b64decode(str(payload.get("data", "")), validate=True)
     if len(raw) != frames * 4:
         raise ValueError("audio byte count does not match frames")

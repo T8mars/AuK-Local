@@ -15,6 +15,11 @@ $exampleWorkflows = Join-Path $target "example_workflows"
 New-Item -ItemType Directory -Path $exampleWorkflows -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $packageRoot "comfyui\workflows") -Filter "AuK-*.json" |
   Copy-Item -Destination $exampleWorkflows -Force
-$config = @{ token_file = (Join-Path $packageRoot "data\session-token") } | ConvertTo-Json
+$tokenSource = Join-Path $packageRoot "data\session-token"
+if (-not (Test-Path -LiteralPath $tokenSource -PathType Leaf)) {
+  throw "AuK Local token not found. Start AuK once before installing the ComfyUI node."
+}
+Copy-Item -LiteralPath $tokenSource -Destination (Join-Path $target "session-token") -Force
+$config = @{ token_file = "session-token" } | ConvertTo-Json
 [System.IO.File]::WriteAllText((Join-Path $target "auk-local-config.json"), $config, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Installed AuK Local nodes to $target"

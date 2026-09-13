@@ -108,6 +108,7 @@ dummy-variable-rgx = "^_.*$"
 
 [tool.ruff.lint.per-file-ignores]
 "src/auk/model/vae/**" = ["E741", "F841", "F821", "F401", "F403", "F405"]
+"comfyui/ComfyUI-AuK-Local/**" = ["N999"]
 
 [tool.ruff.lint.isort]
 force-single-line = false

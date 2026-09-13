@@ -2,4 +2,5 @@
 
 from .version import PROTOCOL_VERSION, VERSION
 
+
 __all__ = ["PROTOCOL_VERSION", "VERSION"]

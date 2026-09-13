@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import hashlib
 import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from .config import LocalPaths
+from .config import LocalPaths, configure_bundled_tools
 from .diagnostics import runtime_diagnostic
 from .manager import TaskManager
 from .version import PROTOCOL_VERSION, VERSION
@@ -27,8 +28,10 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
     from fastapi import Depends, FastAPI, Header, HTTPException
     from fastapi.responses import FileResponse
 
+    configure_bundled_tools(paths)
     task_manager = manager or TaskManager(paths)
     token = load_or_create_token(paths)
+    instance_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -48,6 +51,7 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
             "status": "ok",
             "version": VERSION,
             "protocol_version": PROTOCOL_VERSION,
+            "instance_id": instance_id,
             "ui_enabled": with_ui,
             "inference_ready": all(
                 model["status"] == "ready" for model in runtime_diagnostic(paths, probe_torch=False)["models"]
@@ -62,7 +66,7 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
     def submit_task(payload: dict[str, Any]):
         try:
             record, created = task_manager.submit(payload)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {**record.public_dict(), "created": created}
 

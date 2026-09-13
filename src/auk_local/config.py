@@ -12,7 +12,18 @@ def default_home() -> Path:
     configured = os.environ.get("AUK_LOCAL_HOME")
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[2]
+
+
+def configure_bundled_tools(paths: LocalPaths) -> None:
+    """Prefer portable helper executables shipped with the package."""
+    bundled = paths.root / "runtime" / "ffmpeg"
+    if not bundled.is_dir():
+        return
+    current = os.environ.get("PATH", "")
+    entries = current.split(os.pathsep) if current else []
+    if str(bundled).casefold() not in {entry.casefold() for entry in entries}:
+        os.environ["PATH"] = str(bundled) + (os.pathsep + current if current else "")
 
 
 @dataclass(frozen=True)
@@ -24,7 +35,7 @@ class LocalPaths:
     logs: Path
 
     @classmethod
-    def from_root(cls, root: Path | None = None) -> "LocalPaths":
+    def from_root(cls, root: Path | None = None) -> LocalPaths:
         resolved = (root or default_home()).resolve()
         return cls(
             root=resolved,
