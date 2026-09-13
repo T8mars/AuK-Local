@@ -29,9 +29,22 @@ def read_verified_source(path: Path, request: dict) -> bytes:
     return raw
 
 
+def _audio_integer(value, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"audio {field} 必须是整数")
+    try:
+        number = int(value)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError(f"audio {field} 必须是有限整数") from exc
+    if not isinstance(value, str) and value != number:
+        raise ValueError(f"audio {field} 必须是整数，不能自动取整")
+    return number
+
+
 def encode_float_audio(samples, sample_rate: int) -> dict[str, object]:
-    if sample_rate <= 0:
-        raise ValueError("sample_rate must be positive")
+    sample_rate = _audio_integer(sample_rate, "sample_rate")
+    if not 8_000 <= sample_rate <= 192_000:
+        raise ValueError("audio sample_rate 必须在 8000 到 192000 之间")
     values = array("f", (float(value) for value in samples))
     if not values:
         raise ValueError("audio is empty")
@@ -71,7 +84,7 @@ def encode_gradio_audio(audio_value) -> dict[str, object]:
         raise ValueError(f"不支持的音频数据类型：{values.dtype}")
     if values.ndim == 2:
         values = values.mean(axis=1, dtype=np.float32)
-    return encode_float_audio(values, int(sample_rate))
+    return encode_float_audio(values, sample_rate)
 
 
 def decode_float_audio(payload: dict[str, object]) -> FloatAudio:
@@ -80,9 +93,9 @@ def decode_float_audio(payload: dict[str, object]) -> FloatAudio:
     if payload.get("encoding") != "f32le":
         raise ValueError("only f32le audio is supported")
     try:
-        sample_rate = int(payload.get("sample_rate", 0))
-        channels = int(payload.get("channels", 0))
-        frames = int(payload.get("frames", 0))
+        sample_rate = _audio_integer(payload.get("sample_rate", 0), "sample_rate")
+        channels = _audio_integer(payload.get("channels", 0), "channels")
+        frames = _audio_integer(payload.get("frames", 0), "frames")
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("invalid audio shape or sample rate") from exc
     if sample_rate <= 0 or channels != 1 or frames <= 0:
@@ -91,7 +104,10 @@ def decode_float_audio(payload: dict[str, object]) -> FloatAudio:
         raise ValueError("audio sample_rate 必须在 8000 到 192000 之间")
     if frames > sample_rate * 30:
         raise ValueError("输入音频不能超过 30 秒")
-    raw = base64.b64decode(str(payload.get("data", "")), validate=True)
+    encoded = payload.get("data", "")
+    if not isinstance(encoded, str) or len(encoded) != ((frames * 4 + 2) // 3) * 4:
+        raise ValueError("audio encoded byte count does not match frames")
+    raw = base64.b64decode(encoded, validate=True)
     if len(raw) != frames * 4:
         raise ValueError("audio byte count does not match frames")
     samples = array("f")

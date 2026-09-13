@@ -1,6 +1,6 @@
 param([int]$TimeoutSeconds = 300)
 $ErrorActionPreference = 'Stop'
-$packageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$packageRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $tokenPath = Join-Path $packageRoot 'data\session-token'
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 while ((Get-Date) -lt $deadline) {

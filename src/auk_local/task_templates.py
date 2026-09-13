@@ -45,7 +45,10 @@ def build_instruction(task_key: str, primary: str, secondary: str = "") -> str:
         raise ValueError("主要内容不能为空")
     templates = {
         "instruct_tts": f'请基于下面的声音描述："{secondary or "自然、清晰的声音"}"，生成语音内容："{primary}"。',
-        "zero_shot_tts": f'请使用参考音频中相同的声音说："{primary}"。',
+        "zero_shot_tts": (
+            f'请使用参考音频中相同的声音说："{primary}"。'
+            + (f'参考音频的文字内容为："{secondary}"。' if secondary else "")
+        ),
         "content_edit": primary if not secondary else f"{primary}。文字信息：{secondary}",
         "lyric_edit": primary if not secondary else f"{primary}。歌词信息：{secondary}",
         "pitch": f"将音调调整 {primary} 个半音。{secondary}",

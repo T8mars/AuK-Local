@@ -14,7 +14,7 @@ def download_models(
     *,
     verify_hashes: bool = False,
 ) -> None:
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import hf_hub_download, snapshot_download
 
     manifest = load_model_manifest()["models"]
     paths.models.mkdir(parents=True, exist_ok=True)
@@ -49,6 +49,17 @@ def download_models(
                 local_dir=temporary,
             )
             missing, invalid = model_file_issues(temporary, entry, verify_hashes=verify_hashes)
+            if invalid:
+                # Same-revision local download metadata may otherwise keep
+                # returning a corrupt staged file on every resume attempt.
+                for issue in invalid:
+                    filename = issue.rsplit(":", 1)[0]
+                    print(f">> 重新下载损坏的暂存文件：{filename}")
+                    hf_hub_download(
+                        repo_id=entry["repo_id"], revision=entry["revision"],
+                        filename=filename, local_dir=temporary, force_download=True,
+                    )
+                missing, invalid = model_file_issues(temporary, entry, verify_hashes=verify_hashes)
             if missing or invalid:
                 raise RuntimeError("下载校验失败：" + ", ".join((*missing, *invalid)))
             if backup.exists():

@@ -12,6 +12,13 @@ import pytest
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows launcher")
+def test_browser_helper_supports_brackets_and_unicode_in_package_path(tmp_path):
+    special = tmp_path / "整合包 [test]"
+    special.mkdir()
+    test_browser_helper_opens_only_this_pack(special, "correct")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher")
 @pytest.mark.parametrize("state", ["correct", "degraded", "foreign", "no_ui", "wrong_protocol"])
 def test_browser_helper_opens_only_this_pack(tmp_path, state):
     package = Path(__file__).resolve().parents[1]
@@ -50,7 +57,7 @@ def test_browser_helper_opens_only_this_pack(tmp_path, state):
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper),
                  "-TimeoutSeconds", "2"],
-                capture_output=True, text=True, timeout=15, check=True,
+                capture_output=True, text=True, errors="replace", timeout=15, check=True,
             )
             assert ("WOULD_OPEN_AUK" in result.stdout) == (state in {"correct", "degraded"}), result.stderr
             for name in ("Start-AuK.cmd", "Start-AuK-Service.cmd"):
@@ -60,7 +67,7 @@ def test_browser_helper_opens_only_this_pack(tmp_path, state):
                 command = command.replace("127.0.0.1:7860", f"127.0.0.1:{server.server_port}")
                 result = subprocess.run(
                     ["powershell.exe", "-NoProfile", "-Command", command],
-                    cwd=tmp_path, capture_output=True, text=True, timeout=15,
+                    cwd=tmp_path, capture_output=True, text=True, errors="replace", timeout=15, check=False,
                 )
                 accepted = state in {"correct", "degraded"} or (state == "no_ui" and name == "Start-AuK-Service.cmd")
                 assert (result.returncode == 0) == accepted, (name, state, result.stderr)

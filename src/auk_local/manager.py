@@ -274,8 +274,14 @@ class TaskManager:
             if input_path is not None and raw_audio is not None:
                 task_dir.mkdir(parents=True, exist_ok=True)
                 temporary = input_path.with_suffix(".tmp")
-                temporary.write_bytes(raw_audio)
-                os.replace(temporary, input_path)
+                try:
+                    temporary.write_bytes(raw_audio)
+                    os.replace(temporary, input_path)
+                finally:
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("无法清理输入音频暂存文件", exc_info=True)
             record, created = self._storage_call(
                 "接收任务",
                 lambda: self.store.submit(request["request_id"], request, str(input_path) if input_path else None),

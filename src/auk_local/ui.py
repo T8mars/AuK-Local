@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -42,13 +44,22 @@ def build_ui(manager: TaskManager, paths):
     task_labels = [task.label for task in TASKS]
 
     def budget_html(label, audio_value, duration):
-        task = TASK_BY_LABEL[label]
+        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+        if task is None:
+            return "<div class='auk-budget'>请选择任务类型。</div>"
         source_seconds = 0.0
-        if task.needs_audio and audio_value is not None:
-            sample_rate, samples = audio_value
-            if sample_rate:
-                source_seconds = len(samples) / float(sample_rate)
-        target_seconds = float(duration or 0)
+        try:
+            if task.needs_audio and audio_value is not None:
+                sample_rate, samples = audio_value
+                sample_rate = float(sample_rate)
+                if not math.isfinite(sample_rate) or sample_rate <= 0 or len(samples) == 0:
+                    raise ValueError("invalid audio")
+                source_seconds = len(samples) / sample_rate
+            target_seconds = float(duration)
+            if not math.isfinite(target_seconds) or target_seconds <= 0:
+                raise ValueError("invalid duration")
+        except (TypeError, ValueError, OverflowError):
+            return "<div class='auk-budget'>输入数据无效，请检查音频和目标时长。</div>"
         total = source_seconds + target_seconds
         remaining = max(0.0, 30.0 - total)
         state = "可提交" if total <= 30.0 + 1e-9 else "已超出限制"
@@ -59,7 +70,9 @@ def build_ui(manager: TaskManager, paths):
         )
 
     def update_task(label, audio_value, duration):
-        task = TASK_BY_LABEL[label]
+        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+        if task is None:
+            return gr.skip(), gr.skip(), gr.skip(), budget_html(label, audio_value, duration)
         return (
             gr.update(label=task.primary_label),
             gr.update(label=task.secondary_label),
@@ -68,6 +81,8 @@ def build_ui(manager: TaskManager, paths):
         )
 
     def preview_instruction(label, primary, secondary):
+        if label not in TASK_BY_LABEL:
+            return "请选择任务类型。"
         if not str(primary or "").strip():
             return "请先填写主要内容；最终模型指令会在这里预览。"
         return build_instruction(TASK_BY_LABEL[label].key, primary, secondary)
@@ -105,11 +120,13 @@ def build_ui(manager: TaskManager, paths):
             )
         return rows
 
-    def wait_for_result(request_id, last_audio):
+    def task_updates(request_id, last_audio, is_current):
         if last_audio and not Path(last_audio).is_file():
             last_audio = None
         last_phase = None
         while True:
+            if not is_current():
+                return
             try:
                 record = manager.get(request_id)
             except (sqlite3.Error, OSError) as exc:
@@ -149,48 +166,112 @@ def build_ui(manager: TaskManager, paths):
         else:
             yield f"任务{record.state}：{record.error or ''}", None, last_audio, "", request_id, last_audio, recent_rows()
 
-    def run_task(label, primary, secondary, audio_value, duration, model_label, seed, cpu_offload, keep_loaded, last_audio):
-        task = TASK_BY_LABEL[label]
-        request_id = str(uuid.uuid4())
-        payload = {
-            "request_id": request_id,
-            "task_key": task.key,
-            "primary": primary,
-            "secondary": secondary,
-            "generation_seconds": duration,
-            "model": "flash" if model_label.startswith("AuK-Flash") else "base",
-            "seed": seed,
-            "cpu_offload": cpu_offload,
-            "keep_loaded": keep_loaded,
-            "nfe_steps": 4 if model_label.startswith("AuK-Flash") else 32,
-            "cfg_strength": 0.0 if model_label.startswith("AuK-Flash") else 2.0,
-            "client": "ui",
-        }
+    def begin_action(view_state):
+        if view_state is None:
+            return None
+        lock = view_state.setdefault("_lock", threading.Lock())
+        with lock:
+            ticket = view_state.get("next_ticket", 0) + 1
+            view_state["next_ticket"] = ticket
+            return ticket
+
+    def can_report(view_state, ticket):
+        if view_state is None:
+            return True
+        with view_state["_lock"]:
+            return ticket >= view_state.get("displayed_ticket", 0)
+
+    def unchanged_outputs():
+        return tuple(gr.skip() for _ in range(7))
+
+    def wait_for_result(request_id, last_audio, view_state=None, ticket=None):
+        owner = uuid.uuid4().hex
+        if view_state is not None:
+            with view_state["_lock"]:
+                obsolete = ticket < view_state.get("displayed_ticket", 0)
+                if not obsolete:
+                    view_state["displayed_ticket"] = ticket
+                    view_state["owner"] = owner
+            if obsolete:
+                yield unchanged_outputs()
+                return
+
+        def is_current():
+            return view_state is None or view_state.get("owner") == owner
+
+        for update in task_updates(request_id, last_audio, is_current):
+            if not is_current():
+                yield unchanged_outputs()
+                return
+            yield update
+        if not is_current():
+            # Gradio replays the event's last streamed value in its completion
+            # packet. Replace that cache with skips before a stale event ends.
+            yield unchanged_outputs()
+
+    def action_error(message):
+        # A rejected action must not erase the task/result already displayed.
+        return message, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), recent_rows()
+
+    def run_task(label, primary, secondary, audio_value, duration, model_label, seed, cpu_offload, keep_loaded,
+                 last_audio, view_state=None):
+        ticket = begin_action(view_state)
         try:
+            task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+            if task is None:
+                raise ValueError("请选择任务类型")
+            if model_label not in {"AuK-Flash（推荐）", "AuK Base"}:
+                raise ValueError("请选择模型")
+            is_flash = model_label == "AuK-Flash（推荐）"
+            payload = {
+                "request_id": str(uuid.uuid4()),
+                "task_key": task.key,
+                "primary": primary,
+                "secondary": secondary,
+                "generation_seconds": duration,
+                "model": "flash" if is_flash else "base",
+                "seed": seed,
+                "cpu_offload": cpu_offload,
+                "keep_loaded": keep_loaded,
+                "nfe_steps": 4 if is_flash else 32,
+                "cfg_strength": 0.0 if is_flash else 2.0,
+                "client": "ui",
+            }
             if task.needs_audio and audio_value is not None:
                 payload["audio"] = encode_gradio_audio(audio_value)
             record, _ = manager.submit(payload)
         except Exception as exc:  # noqa: BLE001 - UI boundary reports task submission errors to the user
-            yield f"提交失败：{exc}", None, last_audio, "", request_id, last_audio, recent_rows()
+            if can_report(view_state, ticket):
+                yield action_error(f"提交失败：{exc}")
+            else:
+                yield unchanged_outputs()
             return
-        yield from wait_for_result(record.request_id, last_audio)
+        yield from wait_for_result(record.request_id, last_audio, view_state, ticket)
 
-    def retry_task(request_id, last_audio):
+    def retry_task(request_id, last_audio, view_state=None):
+        ticket = begin_action(view_state)
         try:
             record, _ = manager.retry(str(request_id or "").strip())
         except Exception as exc:  # noqa: BLE001 - UI boundary reports retry errors to the user
-            yield f"重试失败：{exc}", None, last_audio, "", "", last_audio, recent_rows()
+            if can_report(view_state, ticket):
+                yield action_error(f"重试失败：{exc}")
+            else:
+                yield unchanged_outputs()
             return
-        yield from wait_for_result(record.request_id, last_audio)
+        yield from wait_for_result(record.request_id, last_audio, view_state, ticket)
 
-    def view_task(request_id, last_audio):
+    def view_task(request_id, last_audio, view_state=None):
+        ticket = begin_action(view_state)
         request_id = str(request_id or "").strip()
         try:
             manager.get(request_id)
         except (KeyError, sqlite3.Error, OSError) as exc:
-            yield f"读取历史任务失败：{exc}", None, None, "", "", last_audio, recent_rows()
+            if can_report(view_state, ticket):
+                yield action_error(f"读取历史任务失败：{exc}")
+            else:
+                yield unchanged_outputs()
             return
-        yield from wait_for_result(request_id, last_audio)
+        yield from wait_for_result(request_id, last_audio, view_state, ticket)
 
     def cancel_task(request_id):
         if not request_id:
@@ -214,6 +295,7 @@ def build_ui(manager: TaskManager, paths):
         gr.HTML(f"<div class='auk-model-status'>{model_status}</div>")
         current_request = gr.State("")
         last_audio = gr.State(None)
+        view_state = gr.State({"owner": None})
         with gr.Row():
             with gr.Column(scale=6):
                 task_choice = gr.Dropdown(task_labels, value=task_labels[0], label="任务类型")
@@ -226,7 +308,7 @@ def build_ui(manager: TaskManager, paths):
                     model = gr.Dropdown(["AuK-Flash（推荐）", "AuK Base"], value="AuK-Flash（推荐）", label="模型")
                 with gr.Row(elem_classes=["auk-actions"]):
                     run_button = gr.Button("开始生成", variant="primary")
-                    cancel_button = gr.Button("取消当前任务")
+                    cancel_button = gr.Button("取消正在查看的任务")
                 with gr.Accordion("高级参数", open=False):
                     seed = gr.Textbox(value="42", label="Seed", max_lines=1)
                     cpu_offload = gr.Checkbox(value=True, label="CPU Offload（24GB显存推荐）")
@@ -267,7 +349,7 @@ def build_ui(manager: TaskManager, paths):
             component.change(preview_instruction, [task_choice, primary, secondary], instruction_preview)
         run_button.click(
             run_task,
-            [task_choice, primary, secondary, source_audio, duration, model, seed, cpu_offload, keep_loaded, last_audio],
+            [task_choice, primary, secondary, source_audio, duration, model, seed, cpu_offload, keep_loaded, last_audio, view_state],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
         cancel_button.click(cancel_task, current_request, status, queue=False)
@@ -275,12 +357,12 @@ def build_ui(manager: TaskManager, paths):
         demo.load(recent_rows, outputs=history, queue=False)
         retry_button.click(
             retry_task,
-            [retry_request, last_audio],
+            [retry_request, last_audio, view_state],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
         view_button.click(
             view_task,
-            [retry_request, last_audio],
+            [retry_request, last_audio, view_state],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
     return demo
