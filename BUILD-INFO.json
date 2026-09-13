@@ -1,0 +1,16 @@
+{
+  "package": "AuK-Local",
+  "package_version": "0.1.0",
+  "built_at": "2026-09-13T20:30:00+08:00",
+  "upstream_commit": "0dfd4d39015078351217b09a40e263355aaa646b",
+  "python": "3.10.20",
+  "torch": "2.7.1+cu128",
+  "torchaudio": "2.7.1+cu128",
+  "models": {
+    "AuK-Flash": "575b92f0895f75180bf2cbd35f2e176c5732b8ed",
+    "AuK": "790742b71a4430120daf2b2099192abae449eb9f",
+    "Qwen2.5-Omni-3B": "f75b40e3da2003cdd6e1829b1f420ca70797c34e"
+  },
+  "validated_gpu": "NVIDIA GeForce RTX 5090 Laptop GPU 24GB",
+  "service_protocol": "1.0"
+}

@@ -19,6 +19,12 @@ build/
 dist/
 .eggs/
 tmp/
+.test-*/
+data/
+logs/
+models/
+outputs/
+runtime/
 # Virtual envs
 .venv/
 .venv-*/
