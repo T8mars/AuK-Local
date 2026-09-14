@@ -61,19 +61,6 @@ gradio = [
     "modelscope>=1.20,<2",
 ]
 
-# ComfyUI nodes, Prompt Enhancer, cloud ASR, and local SenseVoice fallback.
-# Install with: pip install -e ".[comfyui]"
-comfyui = [
-    "PyYAML>=6.0",
-    "silero-vad>=6.0",
-    "WeTextProcessing>=1.2.0",
-    "pyloudnorm>=0.2.0",
-    "openai>=1.0.0",
-    "tencentcloud-sdk-python-asr>=3.0.0",
-    "funasr>=1.3,<2",
-    "modelscope>=1.20,<2",
-]
-
 # Extra deps for full DiT fine-tuning (src/auk/train/train.py). Not needed for inference.
 # Install with: pip install -e ".[train]"
 train = [
@@ -111,7 +98,6 @@ dummy-variable-rgx = "^_.*$"
 
 [tool.ruff.lint.per-file-ignores]
 "src/auk/model/vae/**" = ["E741", "F841", "F821", "F401", "F403", "F405"]
-"comfyui/ComfyUI-AuK-Local/**" = ["N999"]
 
 [tool.ruff.lint.isort]
 force-single-line = false

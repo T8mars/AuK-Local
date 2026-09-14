@@ -1,4 +1,4 @@
-"""Windows-friendly local AuK service shared by the UI and ComfyUI."""
+"""Windows-friendly service for the standalone AuK Local workstation."""
 
 from .version import PROTOCOL_VERSION, VERSION
 

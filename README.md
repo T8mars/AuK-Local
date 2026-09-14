@@ -15,6 +15,8 @@
 💻 Try our model on the <a href="https://huggingface.co/spaces/tencent/AuK">HuggingFace Space</a> · <a href="https://modelscope.cn/studios/Tencent-Hunyuan/AuK">ModelScope Space</a>!
 </p>
 
+> **AuK Local package note:** this checkout powers the standalone light-themed local workstation. The supported ComfyUI integration is the independent [AuK · T8star-Aix native node package](https://github.com/T8mars/Comfyui-Auk-T8); it runs directly in ComfyUI and does not use this package's port 7860 service.
+
 ## News
 
 - **[2026/09/09]** 🙌 Thanks to **SGLang-Omni** for Day 0 support for **AuK** and **AuK-Flash**! Check out the [SGLang-Omni cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html) to get started.
@@ -207,9 +209,6 @@ uv pip install -e .
 # Core inference + Gradio + Prompt Enhancer + ASR
 uv pip install -e ".[gradio]"
 
-# Core inference + ComfyUI nodes + Prompt Enhancer + ASR
-uv pip install -e ".[comfyui]"
-
 # Core inference + fine-tuning
 uv pip install -e ".[train]"
 
@@ -229,9 +228,6 @@ pip install -e .
 
 # Core inference + Gradio + Prompt Enhancer + ASR
 pip install -e ".[gradio]"
-
-# Core inference + ComfyUI nodes + Prompt Enhancer + ASR
-pip install -e ".[comfyui]"
 
 # Core inference + fine-tuning
 pip install -e ".[train]"
@@ -507,16 +503,10 @@ auk-gradio --port 8000
 
 ### ComfyUI
 
-Use **AuK Base** and **AuK-Flash** for speech generation, editing, enhancement,
-and separation through **AuK Model Loader** and **AuK Generate / Edit**.
-Install `.[comfyui]` in the environment that runs ComfyUI, link
-[`comfyui/ComfyUI-AuK`](comfyui/ComfyUI-AuK) into `ComfyUI/custom_nodes`, and
-open the reusable [`auk.json`](comfyui/workflows/auk.json) workflow.
-
-The included workflow starts with Base, PE disabled, and a 3-second text-only
-example. See the [ComfyUI guide](docs/COMFYUI.md) for installation,
-shared `.env` configuration, Flash settings, audio input/output,
-and the integration's 30-second source-plus-target sequence limit.
+Install the independent [AuK · T8star-Aix native node package](https://github.com/T8mars/Comfyui-Auk-T8)
+from ComfyUI Manager or GitHub. It loads AuK Base or AuK-Flash directly from
+`ComfyUI/models/auk`, and it does not require AuK Local, port 7860, or a service
+token. The standalone local package does not bundle or install ComfyUI nodes.
 
 ### Python API
 
