@@ -12,6 +12,8 @@ from typing import Any
 from .audio import read_verified_source, validate_duration
 from .config import LocalPaths, load_model_manifest, model_paths
 from .diagnostics import model_file_issues
+from .preprocess import limit_vocal_output, prepare_model_audio
+from .task_templates import emotion_duration_multiplier, parse_speed_multiplier
 from .version import VERSION
 
 
@@ -91,12 +93,18 @@ class InferenceRuntime:
             engine = self._load(model_key, cpu_offload, progress)
             audio = None
             source_seconds = 0.0
+            original_source_seconds = 0.0
+            preprocessing = None
             qwen_audio = None
             if input_path:
                 source_samples = array("f")
                 source_samples.frombytes(raw_source)
                 source_rate = int(task["source_sample_rate"])
                 waveform = torch.tensor(source_samples, dtype=torch.float32).unsqueeze(0)
+                original_source_seconds = waveform.shape[-1] / source_rate
+                waveform, preprocessing = prepare_model_audio(
+                    waveform, source_rate, str(task.get("task_key") or ""), str(task.get("primary") or ""),
+                )
                 source_seconds = waveform.shape[-1] / source_rate
                 audio = (waveform, source_rate)
                 qwen_waveform = waveform
@@ -104,6 +112,16 @@ class InferenceRuntime:
                     qwen_waveform = torchaudio.functional.resample(waveform, source_rate, 16_000)
                 qwen_audio = qwen_waveform.squeeze(0).contiguous().numpy()
             target_seconds = float(task["generation_seconds"])
+            duration_mode = str(task.get("duration_mode") or "manual")
+            if input_path and original_source_seconds > 0:
+                if duration_mode in {"source", "source_auto"}:
+                    target_seconds = source_seconds
+                elif duration_mode == "speed":
+                    target_seconds = source_seconds / parse_speed_multiplier(str(task.get("primary") or ""))
+                elif duration_mode == "emotion":
+                    target_seconds = source_seconds * emotion_duration_multiplier(str(task.get("primary") or ""))
+                elif duration_mode == "content":
+                    target_seconds *= source_seconds / original_source_seconds
             validate_duration(source_seconds, target_seconds)
             content: list[dict[str, Any]] = [{"type": "text", "text": str(task["instruction"])}]
             if qwen_audio is not None:
@@ -122,6 +140,9 @@ class InferenceRuntime:
                 seed=int(task["seed"]),
             )
             progress("decoding")
+            generated, vocal_peak_limited = limit_vocal_output(
+                generated, str(task.get("task_key") or ""),
+            )
             if (
                 not torch.is_tensor(generated)
                 or generated.ndim != 2
@@ -165,9 +186,13 @@ class InferenceRuntime:
                 "model_identity_check": "required files and byte sizes verified at load",
                 "seed": int(task["seed"]),
                 "seed_mode": task.get("seed_mode", "fixed"),
-                "requested_generation_seconds": target_seconds,
-                "duration_mode": task.get("duration_mode", "manual"),
+                "requested_generation_seconds": float(task["generation_seconds"]),
+                "applied_generation_seconds": target_seconds,
+                "duration_mode": duration_mode,
+                "original_source_seconds": original_source_seconds,
                 "source_seconds": source_seconds,
+                "input_preprocessing": preprocessing,
+                "vocal_output_peak_limited": vocal_peak_limited,
                 "actual_output_seconds": generated.shape[-1] / int(sample_rate),
                 "sample_rate": int(sample_rate),
                 "nfe_steps": 4 if model_key == "flash" else int(task.get("nfe_steps", 32)),

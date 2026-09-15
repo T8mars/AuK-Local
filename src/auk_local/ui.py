@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import math
 import secrets
@@ -12,7 +13,17 @@ from pathlib import Path
 from .audio import encode_gradio_audio
 from .duration import TTS_TASK_KEYS, estimate_tts_seconds
 from .manager import TaskManager
-from .task_templates import TASK_BY_KEY, TASK_BY_LABEL, TASKS, build_instruction
+from .task_templates import (
+    TASK_BY_KEY,
+    TASK_BY_LABEL,
+    TASK_GUIDES,
+    TASKS,
+    build_instruction,
+    content_scaled_seconds,
+    emotion_duration_multiplier,
+    nonverbal_duration_delta,
+    parse_speed_multiplier,
+)
 from .updater import UpdateError, UpdateManager
 from .version import VERSION
 
@@ -26,6 +37,19 @@ body, .gradio-container { background: #f8fafc !important; color: #0f172a !import
 .auk-header h1 { margin: 6px 0 !important; color: #0f172a; }
 .auk-eyebrow { color: #fb7299; font-size: 12px; font-weight: 750; letter-spacing: .11em; }
 .auk-subtitle { color: #475569; }
+.auk-byline { margin-top: 8px; color: #334155; font-size: 14px; font-weight: 650; }
+.auk-byline a { color: #d94f91 !important; text-decoration: none !important; }
+.auk-social-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.auk-social-link { display: inline-flex; align-items: center; min-height: 32px; padding: 5px 11px;
+  border: 1px solid rgba(217,79,145,.24); border-radius: 999px; background: rgba(255,255,255,.78);
+  color: #334155 !important; font-size: 13px; font-weight: 650; text-decoration: none !important;
+  transition: border-color .16s ease, color .16s ease, transform .16s ease; }
+.auk-social-link:hover { border-color: #d94f91; color: #d94f91 !important; transform: translateY(-1px); }
+.auk-task-guide { margin: 2px 0 10px; padding: 12px 14px; border: 1px solid rgba(89,125,255,.20);
+  border-left: 4px solid #597dff; border-radius: 12px; background: #f8faff; color: #334155; line-height: 1.65; }
+.auk-task-guide-title { color: #3156c8; font-weight: 800; }
+.auk-task-guide-example { margin-top: 4px; color: #0f172a; }
+.auk-task-guide-note { margin-top: 3px; color: #64748b; font-size: 13px; }
 .auk-budget { padding: 10px 14px; border: 1px solid rgba(89,125,255,.22); border-radius: 12px;
   background: rgba(89,125,255,.055); color: #3156c8; }
 .auk-status { min-height: 46px; padding: 12px 14px; border-radius: 12px; background: #fff; border: 1px solid #e2e8f0; }
@@ -58,6 +82,31 @@ def build_ui(
     task_labels = [task.label for task in TASKS]
     updater = update_manager or UpdateManager(paths)
 
+    def task_guide_html(label):
+        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+        if task is None:
+            return "<aside class='auk-task-guide'>请选择任务类型后查看官方用法。</aside>"
+        guide = TASK_GUIDES[task.key]
+        audio_requirement = "必须上传音频" if task.needs_audio else "无需上传音频"
+        duration_requirement = {
+            "tts": "时长：默认按目标文本自动估算，也可关闭后手动设置。",
+            "source": "时长：按原音频精确长度自动锁定。",
+            "speed": "时长：按“原音频时长 ÷ 速度倍率”自动锁定。",
+            "emotion": "时长：按官方情绪系数自动锁定（悲伤 ×1.22、恐惧 ×1.16、其余 ×1.06）。",
+            "content": "时长：按原音频与本次文字增删比例自动估算；填写完整原文/歌词会更准确。",
+            "nonverbal": "时长：按官方非语言事件增删系数，在原音频时长上自动调整。",
+            "manual": "时长：可手动设置，也可勾选“按原音频时长”。",
+        }[task.duration_strategy]
+        return (
+            "<aside class='auk-task-guide'>"
+            f"<div class='auk-task-guide-title'>📘 官方用法 · {html.escape(task.label)} · {audio_requirement}</div>"
+            f"<div>{html.escape(guide.requirement)}</div>"
+            f"<div class='auk-task-guide-example'><strong>示例：</strong>{html.escape(guide.example)}</div>"
+            f"<div class='auk-task-guide-note'>{html.escape(duration_requirement)}</div>"
+            f"<div class='auk-task-guide-note'>{html.escape(guide.note)}</div>"
+            "</aside>"
+        )
+
     def check_program_update():
         try:
             result = updater.check()
@@ -86,59 +135,228 @@ def build_ui(
         except (UpdateError, RuntimeError, sqlite3.Error, OSError) as exc:
             return f"安装更新失败：{exc}", gr.update(interactive=True)
 
-    def effective_ui_duration(label, primary, duration, auto_duration):
-        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
-        if task is not None and task.key in TTS_TASK_KEYS and bool(auto_duration):
-            return estimate_tts_seconds(primary), True
-        return float(duration), False
+    def source_audio_seconds(audio_value):
+        if audio_value is None:
+            raise ValueError("请先上传音频")
+        sample_rate, samples = audio_value
+        sample_rate = float(sample_rate)
+        try:
+            frame_count = int(samples.shape[0])
+        except (AttributeError, IndexError, TypeError):
+            frame_count = len(samples)
+        if not math.isfinite(sample_rate) or sample_rate <= 0 or frame_count <= 0:
+            raise ValueError("音频数据无效")
+        return frame_count / sample_rate
 
-    def budget_html(label, audio_value, duration, primary="", auto_duration=False):
+    def source_audio_info_html(audio_value):
+        if audio_value is None:
+            return (
+                "<div class='auk-budget'>尚未上传音频。波形中拖选只是在选择；"
+                "请点击右下角剪刀，或使用下面的明确截取按钮，实际时长才会改变。</div>"
+            )
+        try:
+            seconds = source_audio_seconds(audio_value)
+        except (TypeError, ValueError, OverflowError):
+            return "<div class='auk-budget'>音频数据无效，请重新上传。</div>"
+        return (
+            f"<div class='auk-budget'><strong>实际提交输入：{seconds:.2f} 秒</strong>。"
+            "这个数值才是模型收到的长度；波形选区必须点击剪刀后才生效。</div>"
+        )
+
+    def apply_source_trim(
+        label, primary, secondary, duration, auto_duration, source_duration, audio_value, trim_start, trim_end,
+    ):
+        if audio_value is None:
+            raise gr.Error("请先上传音频")
+        import numpy as np
+
+        sample_rate, samples = audio_value
+        values = np.asarray(samples)
+        total_seconds = source_audio_seconds(audio_value)
+        try:
+            start = float(trim_start or 0.0)
+            end = float(trim_end or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise gr.Error("截取开始和结束必须是秒数") from exc
+        if not math.isfinite(start) or not math.isfinite(end):
+            raise gr.Error("截取开始和结束必须是有限秒数")
+        if end <= 0:
+            end = total_seconds
+        if start < 0 or end <= start or end > total_seconds + 1e-6:
+            raise gr.Error(f"截取范围必须在 0 到 {total_seconds:.2f} 秒内，且结束要大于开始")
+        start_frame = min(values.shape[0] - 1, max(0, int(round(start * float(sample_rate)))))
+        end_frame = min(values.shape[0], max(start_frame + 1, int(round(end * float(sample_rate)))))
+        clipped = (int(sample_rate), values[start_frame:end_frame].copy())
+        duration_update, budget_update = update_duration_control(
+            label, primary, duration, auto_duration, source_duration, clipped, secondary,
+        )
+        return clipped, duration_update, budget_update, source_audio_info_html(clipped)
+
+    def effective_ui_duration(
+        label, primary, duration, auto_duration, source_duration=False, audio_value=None, secondary="",
+    ):
+        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+        if task is not None and task.duration_strategy == "speed":
+            return source_audio_seconds(audio_value) / parse_speed_multiplier(primary), "speed"
+        if task is not None and task.duration_strategy == "source":
+            return source_audio_seconds(audio_value), "source_auto"
+        if task is not None and task.duration_strategy == "emotion":
+            return source_audio_seconds(audio_value) * emotion_duration_multiplier(primary), "emotion"
+        if task is not None and task.needs_audio and bool(source_duration):
+            return source_audio_seconds(audio_value), "source"
+        if task is not None and task.duration_strategy == "content":
+            return content_scaled_seconds(
+                task.key, primary, source_audio_seconds(audio_value), str(secondary or "").strip(),
+            ), "content"
+        if task is not None and task.duration_strategy == "nonverbal":
+            return max(0.1, source_audio_seconds(audio_value) + nonverbal_duration_delta(primary)), "nonverbal"
+        if task is not None and task.key in TTS_TASK_KEYS and bool(auto_duration):
+            return estimate_tts_seconds(primary), "auto"
+        return float(duration), "manual"
+
+    def budget_html(
+        label, audio_value, duration, primary="", auto_duration=False, source_duration=False, secondary="",
+    ):
         task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
         if task is None:
             return "<div class='auk-budget'>请选择任务类型。</div>"
         source_seconds = 0.0
         try:
             if task.needs_audio and audio_value is not None:
-                sample_rate, samples = audio_value
-                sample_rate = float(sample_rate)
-                if not math.isfinite(sample_rate) or sample_rate <= 0 or len(samples) == 0:
-                    raise ValueError("invalid audio")
-                source_seconds = len(samples) / sample_rate
-            target_seconds, estimated = effective_ui_duration(label, primary, duration, auto_duration)
+                source_seconds = source_audio_seconds(audio_value)
+            target_seconds, duration_mode = effective_ui_duration(
+                label, primary, duration, auto_duration, source_duration, audio_value, secondary,
+            )
             if not math.isfinite(target_seconds) or target_seconds <= 0:
                 raise ValueError("invalid duration")
         except (TypeError, ValueError, OverflowError):
+            if task.duration_strategy == "speed" and audio_value is None:
+                return "<div class='auk-budget'>速度编辑：请先上传音频，输出时长将按“输入时长 ÷ 速度倍率”自动计算。</div>"
+            if task.duration_strategy == "source" and audio_value is None:
+                return "<div class='auk-budget'>此任务按原音频时长生成：请先上传音频。</div>"
+            if task.duration_strategy == "emotion" and audio_value is None:
+                return "<div class='auk-budget'>情绪编辑：请先上传音频，输出时长将按官方情绪系数自动计算。</div>"
+            if task.duration_strategy == "content" and audio_value is None:
+                return "<div class='auk-budget'>文字/歌词编辑：请先上传音频，输出时长将按文字变化自动估算。</div>"
+            if task.duration_strategy == "nonverbal" and audio_value is None:
+                return "<div class='auk-budget'>非语言声音编辑：请先上传音频，输出时长将按事件增删自动估算。</div>"
+            if task.needs_audio and bool(source_duration) and audio_value is None:
+                return "<div class='auk-budget'>按原音频时长：请先上传音频。</div>"
             return "<div class='auk-budget'>输入数据无效，请检查音频和目标时长。</div>"
         total = source_seconds + target_seconds
         remaining = max(0.0, 30.0 - total)
         state = "可提交" if total <= 30.0 + 1e-9 else "已超出限制"
-        mode = "自动估算" if estimated else "当前设置"
+        mode = {
+            "auto": "自动估算 TTS",
+            "source": "按原音频时长",
+            "source_auto": "官方等长任务",
+            "speed": "速度倍率自动计算",
+            "emotion": "官方情绪系数自动计算",
+            "content": "官方文字变化自动估算",
+            "nonverbal": "官方声音增删自动估算",
+            "manual": "手动设置",
+        }[duration_mode]
         return (
             f"<div class='auk-budget'>{mode} · 30 秒预算："
             f"输入 {source_seconds:.2f}s + 输出 {target_seconds:.2f}s = {total:.2f}s"
             f" · 剩余 {remaining:.2f}s · {state}</div>"
         )
 
-    def update_duration_control(label, primary, duration, auto_duration, audio_value):
+    def update_duration_control(
+        label, primary, duration, auto_duration, source_duration, audio_value, secondary="",
+    ):
+        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+        locked = bool(
+            task is not None
+            and (
+                task.key == "speed"
+                or task.duration_strategy == "source"
+                or task.duration_strategy == "emotion"
+                or task.duration_strategy in {"content", "nonverbal"}
+                or (task.key in TTS_TASK_KEYS and auto_duration)
+                or (task.needs_audio and source_duration)
+            )
+        )
         try:
-            target_seconds, estimated = effective_ui_duration(label, primary, duration, auto_duration)
-            update = gr.update(value=target_seconds, interactive=not estimated)
+            target_seconds, duration_mode = effective_ui_duration(
+                label, primary, duration, auto_duration, source_duration, audio_value, secondary,
+            )
+            update = gr.update(value=target_seconds, interactive=duration_mode == "manual")
         except (TypeError, ValueError, OverflowError):
-            update = gr.update(interactive=not bool(auto_duration))
-        return update, budget_html(label, audio_value, duration, primary, auto_duration)
+            update = gr.update(interactive=not locked)
+        return update, budget_html(
+            label, audio_value, duration, primary, auto_duration, source_duration, secondary,
+        )
+
+    def choose_auto_duration(label, primary, duration, auto_duration, source_duration, audio_value, secondary=""):
+        resolved_source_duration = False if bool(auto_duration) else bool(source_duration)
+        duration_update, budget_update = update_duration_control(
+            label, primary, duration, auto_duration, resolved_source_duration, audio_value, secondary,
+        )
+        return gr.update(value=resolved_source_duration), duration_update, budget_update
+
+    def choose_source_duration(label, primary, duration, auto_duration, source_duration, audio_value, secondary=""):
+        resolved_auto_duration = False if bool(source_duration) else bool(auto_duration)
+        duration_update, budget_update = update_duration_control(
+            label, primary, duration, resolved_auto_duration, source_duration, audio_value, secondary,
+        )
+        return gr.update(value=resolved_auto_duration), duration_update, budget_update
 
     def update_seed_control(random_seed):
         return gr.update(interactive=not bool(random_seed))
 
-    def update_task(label, audio_value, duration, primary="", auto_duration=False):
+    def update_task(
+        label, audio_value, duration, primary="", auto_duration=False, source_duration=False, secondary="",
+    ):
         task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
         if task is None:
-            return gr.skip(), gr.skip(), gr.skip(), budget_html(label, audio_value, duration, primary, auto_duration)
+            return (
+                gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                budget_html(
+                    label, audio_value, duration, primary, auto_duration, source_duration, secondary,
+                ), task_guide_html(label),
+            )
+        # AuK's official editor prompts are single-operation templates. Appending
+        # free-form text changes the trained prompt and can make output copy the source.
+        hides_secondary = task.key not in {"instruct_tts", "content_edit", "lyric_edit"}
+        secondary_update = gr.update(label=task.secondary_label, visible=not hides_secondary)
+        secondary_update["value"] = ""
+        resolved_auto_duration = bool(auto_duration) if task.key in TTS_TASK_KEYS else False
+        optional_source_duration = task.needs_audio and task.duration_strategy in {
+            "tts", "manual", "content", "nonverbal",
+        }
+        resolved_source_duration = bool(source_duration) if optional_source_duration else False
+        if resolved_auto_duration and resolved_source_duration:
+            resolved_source_duration = False
+        duration_update, budget_update = update_duration_control(
+            label, primary, duration, resolved_auto_duration, resolved_source_duration, audio_value, secondary,
+        )
+        duration_update["label"] = {
+            "speed": "自动输出时长（原音频时长 ÷ 速度倍率）",
+            "source": "自动输出时长（按原音频）",
+            "emotion": "自动输出时长（按官方情绪系数）",
+            "content": "自动输出时长（按文字变化估算）",
+            "nonverbal": "自动输出时长（按声音增删估算）",
+        }.get(task.duration_strategy, "目标时长（秒）")
+        source_duration_label = {
+            "source": "按原音频时长（本任务自动控制）",
+            "speed": "按原音频时长（速度倍率自动控制）",
+            "emotion": "按原音频时长（官方情绪系数自动控制）",
+        }.get(task.duration_strategy, "按原音频时长")
         return (
-            gr.update(label=task.primary_label),
-            gr.update(label=task.secondary_label),
+            gr.update(label=task.primary_label, placeholder=f"示例：{TASK_GUIDES[task.key].example}", value=""),
+            secondary_update,
             gr.update(label="参考声音" if task.key == "zero_shot_tts" else "待处理音频", visible=task.needs_audio),
-            budget_html(label, audio_value, duration, primary, auto_duration),
+            gr.update(value=resolved_auto_duration, visible=task.key in TTS_TASK_KEYS),
+            gr.update(
+                value=resolved_source_duration,
+                label=source_duration_label,
+                visible=True,
+                interactive=optional_source_duration,
+            ),
+            duration_update,
+            budget_update,
+            task_guide_html(label),
         )
 
     def preview_instruction(label, primary, secondary):
@@ -146,7 +364,10 @@ def build_ui(
             return "请选择任务类型。"
         if not str(primary or "").strip():
             return "请先填写主要内容；最终模型指令会在这里预览。"
-        return build_instruction(TASK_BY_LABEL[label].key, primary, secondary)
+        try:
+            return build_instruction(TASK_BY_LABEL[label].key, primary, secondary)
+        except ValueError as exc:
+            return f"输入有误：{exc}"
 
     def recent_rows():
         state_labels = {
@@ -298,16 +519,18 @@ def build_ui(
         return message, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), recent_rows()
 
     def run_task(label, primary, secondary, audio_value, duration, model_label, seed, cpu_offload, keep_loaded,
-                 last_audio, view_state=None, auto_duration=False, random_seed=False):
+                 last_audio, view_state=None, auto_duration=False, random_seed=False, source_duration=False):
         ticket = begin_action(view_state)
         try:
             task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
             if task is None:
                 raise ValueError("请选择任务类型")
-            if model_label not in {"AuK-Flash（推荐）", "AuK Base"}:
+            if model_label not in {"AuK Base（高质量推荐）", "AuK-Flash（极速）", "AuK-Flash（推荐）", "AuK Base"}:
                 raise ValueError("请选择模型")
-            is_flash = model_label == "AuK-Flash（推荐）"
-            resolved_duration, duration_is_auto = effective_ui_duration(label, primary, duration, auto_duration)
+            is_flash = model_label in {"AuK-Flash（极速）", "AuK-Flash（推荐）"}
+            resolved_duration, duration_mode = effective_ui_duration(
+                label, primary, duration, auto_duration, source_duration, audio_value, secondary,
+            )
             resolved_seed = secrets.randbelow(2**31) if bool(random_seed) else seed
             payload = {
                 "request_id": str(uuid.uuid4()),
@@ -315,7 +538,7 @@ def build_ui(
                 "primary": primary,
                 "secondary": secondary,
                 "generation_seconds": resolved_duration,
-                "duration_mode": "auto" if duration_is_auto else "manual",
+                "duration_mode": duration_mode,
                 "model": "flash" if is_flash else "base",
                 "seed": resolved_seed,
                 "seed_mode": "random" if bool(random_seed) else "fixed",
@@ -378,7 +601,22 @@ def build_ui(
     with gr.Blocks(title="AuK 本地音频工作台", analytics_enabled=False) as demo:
         gr.HTML(
             "<section class='auk-header'><div class='auk-eyebrow'>AUK · LOCAL AUDIO WORKSPACE</div>"
-            "<h1>AuK 本地音频工作台</h1><div class='auk-subtitle'>语音生成、编辑、增强与分离 · 本地运行</div></section>"
+            "<h1>AuK 本地音频工作台</h1>"
+            "<div class='auk-subtitle'>语音生成、编辑、增强与分离 · 本地运行</div>"
+            "<div class='auk-byline'>By <a href='https://space.bilibili.com/385085361' target='_blank' "
+            "rel='noopener noreferrer'>B站 T8star-Aix</a></div>"
+            "<nav class='auk-social-links' aria-label='T8star-Aix 社媒与项目链接'>"
+            "<a class='auk-social-link' href='https://space.bilibili.com/385085361' target='_blank' "
+            "rel='noopener noreferrer'>B站</a>"
+            "<a class='auk-social-link' href='https://www.youtube.com/@T8star-Aix/' target='_blank' "
+            "rel='noopener noreferrer'>YouTube</a>"
+            "<a class='auk-social-link' href='https://api.seedance.nz/sign-up?aff=5f4w' target='_blank' "
+            "rel='noopener noreferrer'>API</a>"
+            "<a class='auk-social-link' href='https://huggingface.co/t8star/Auk-Comfy' target='_blank' "
+            "rel='noopener noreferrer'>Hugging Face</a>"
+            "<a class='auk-social-link' href='https://github.com/T8mars/AuK-Local' target='_blank' "
+            "rel='noopener noreferrer'>GitHub</a>"
+            "</nav></section>"
         )
         gr.HTML(f"<div class='auk-model-status'>{model_status}</div>")
         with gr.Row(elem_classes=["auk-updater"]):
@@ -396,9 +634,20 @@ def build_ui(
         with gr.Row():
             with gr.Column(scale=6):
                 task_choice = gr.Dropdown(task_labels, value=task_labels[0], label="任务类型")
-                primary = gr.Textbox(label=TASKS[0].primary_label, lines=4, value="你好，欢迎使用 AuK。")
+                task_guide = gr.HTML(task_guide_html(task_labels[0]))
+                primary = gr.Textbox(
+                    label=TASKS[0].primary_label,
+                    lines=4,
+                    value="你好，欢迎使用 AuK。",
+                    placeholder=f"示例：{TASK_GUIDES[TASKS[0].key].example}",
+                )
                 secondary = gr.Textbox(label=TASKS[0].secondary_label, lines=3, value="自然、清晰、温暖")
                 source_audio = gr.Audio(label="待处理音频", type="numpy", visible=False)
+                source_audio_info = gr.HTML(source_audio_info_html(None))
+                with gr.Row():
+                    trim_start = gr.Number(value=0.0, minimum=0.0, label="截取开始（秒）")
+                    trim_end = gr.Number(value=0.0, minimum=0.0, label="截取结束（秒；0 表示到结尾）")
+                    trim_button = gr.Button("✂ 应用截取", variant="secondary")
                 initial_duration = estimate_tts_seconds("你好，欢迎使用 AuK。")
                 budget = gr.HTML(budget_html(task_labels[0], None, initial_duration, "你好，欢迎使用 AuK。", True))
                 with gr.Row():
@@ -406,9 +655,20 @@ def build_ui(
                         0.2, 30.0, value=initial_duration, step=0.1,
                         label="目标时长（秒）", interactive=False,
                     )
-                    model = gr.Dropdown(["AuK-Flash（推荐）", "AuK Base"], value="AuK-Flash（推荐）", label="模型")
+                    model = gr.Dropdown(
+                        ["AuK Base（高质量推荐）", "AuK-Flash（极速）"],
+                        value="AuK Base（高质量推荐）",
+                        label="模型",
+                    )
                 with gr.Row():
                     auto_duration = gr.Checkbox(value=True, label="自动估算 TTS 时长（避免结尾多读）")
+                    source_duration = gr.Checkbox(
+                        value=False,
+                        label="按原音频时长",
+                        visible=True,
+                        interactive=False,
+                    )
+                with gr.Row():
                     random_seed = gr.Checkbox(value=True, label="🎲 每次使用随机 Seed（抽卡）")
                     seed = gr.Textbox(value="42", label="固定 Seed（关闭随机后生效）", max_lines=1, interactive=False)
                 with gr.Row(elem_classes=["auk-actions"]):
@@ -444,25 +704,53 @@ def build_ui(
                 retry_button = gr.Button("重试失败 / 取消 / 中断任务")
         task_choice.change(
             update_task,
-            [task_choice, source_audio, duration, primary, auto_duration],
-            [primary, secondary, source_audio, budget],
+            [task_choice, source_audio, duration, primary, auto_duration, source_duration, secondary],
+            [primary, secondary, source_audio, auto_duration, source_duration, duration, budget, task_guide],
         )
-        source_audio.change(budget_html, [task_choice, source_audio, duration, primary, auto_duration], budget)
-        duration.change(budget_html, [task_choice, source_audio, duration, primary, auto_duration], budget)
-        task_choice.change(
-            update_duration_control,
-            [task_choice, primary, duration, auto_duration, source_audio],
-            [duration, budget],
+        source_audio.input(
+            lambda label, primary_text, duration_value, auto_value, source_value, audio, secondary_text: (
+                *update_duration_control(
+                    label, primary_text, duration_value, auto_value, source_value, audio, secondary_text,
+                ),
+                source_audio_info_html(audio),
+            ),
+            [task_choice, primary, duration, auto_duration, source_duration, source_audio, secondary],
+            [duration, budget, source_audio_info],
+            queue=False,
+        )
+        trim_button.click(
+            apply_source_trim,
+            [
+                task_choice, primary, secondary, duration, auto_duration, source_duration,
+                source_audio, trim_start, trim_end,
+            ],
+            [source_audio, duration, budget, source_audio_info],
+            queue=False,
+        )
+        duration.change(
+            budget_html,
+            [task_choice, source_audio, duration, primary, auto_duration, source_duration, secondary],
+            budget,
         )
         primary.change(
             update_duration_control,
-            [task_choice, primary, duration, auto_duration, source_audio],
+            [task_choice, primary, duration, auto_duration, source_duration, source_audio, secondary],
             [duration, budget],
         )
-        auto_duration.change(
+        secondary.change(
             update_duration_control,
-            [task_choice, primary, duration, auto_duration, source_audio],
+            [task_choice, primary, duration, auto_duration, source_duration, source_audio, secondary],
             [duration, budget],
+        )
+        auto_duration.input(
+            choose_auto_duration,
+            [task_choice, primary, duration, auto_duration, source_duration, source_audio, secondary],
+            [source_duration, duration, budget],
+        )
+        source_duration.input(
+            choose_source_duration,
+            [task_choice, primary, duration, auto_duration, source_duration, source_audio, secondary],
+            [auto_duration, duration, budget],
         )
         random_seed.change(update_seed_control, random_seed, seed, queue=False)
         for component in (task_choice, primary, secondary):
@@ -470,7 +758,7 @@ def build_ui(
         run_button.click(
             run_task,
             [task_choice, primary, secondary, source_audio, duration, model, seed, cpu_offload, keep_loaded,
-             last_audio, view_state, auto_duration, random_seed],
+             last_audio, view_state, auto_duration, random_seed, source_duration],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
         cancel_button.click(cancel_task, current_request, status, queue=False)

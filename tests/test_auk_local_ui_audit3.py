@@ -8,7 +8,13 @@ import pytest
 
 from auk_local.config import LocalPaths
 from auk_local.manager import TaskManager
-from auk_local.task_templates import TASKS, build_instruction
+from auk_local.task_templates import (
+    TASK_GUIDES,
+    TASKS,
+    build_instruction,
+    content_scaled_seconds,
+    nonverbal_duration_delta,
+)
 from auk_local.ui import build_ui
 
 
@@ -155,8 +161,8 @@ def test_gradio_completion_packet_does_not_replay_superseded_status_or_clear_aud
 
     async def exercise():
         running = await call("run_task", [
-            "描述生成语音", "test", "", None, 1, "AuK-Flash（推荐）", "42", True, False, None, None,
-            True, True,
+            "描述生成语音", "test", "", None, 1, "AuK-Flash（极速）", "42", True, False, None, None,
+            True, True, False,
         ])
         assert running["is_generating"]
         viewed = await call("view_task", [history_id, None, None])
@@ -230,16 +236,71 @@ def test_cleared_task_and_invalid_duration_do_not_break_preview(workspace):
     assert all(update == {"__type__": "update"} for update in updates[:3])
 
 
-@pytest.mark.parametrize("task", TASKS, ids=lambda task: task.key)
-def test_each_template_keeps_both_user_text_fields(task):
-    instruction = build_instruction(task.key, "primary-marker", "secondary-marker")
-    assert "primary-marker" in instruction
-    assert "secondary-marker" in instruction
-    if task.key == "zero_shot_tts":
-        assert '参考音频的文字内容为："secondary-marker"' in instruction
+@pytest.mark.parametrize(
+    ("task_key", "primary", "secondary", "expected"),
+    [
+        ("instruct_tts", "欢迎回来", "温柔女声", '请基于下面的描述: "温柔女声",生成语音内容"欢迎回来".'),
+        ("zero_shot_tts", "欢迎回来", "不应发送", 'Say the following with the same voice: "欢迎回来"'),
+        ("content_edit", "夜色那么美改成白天那么美", "不应发送", "把‘夜色那么美’改成‘白天那么美’"),
+        ("lyric_edit", "把歌词‘明天你好’改成‘未来你好’", "不应发送", "把这段歌词中的“明天你好”改成“未来你好”。"),
+        ("pitch", "+1", "不应发送", "将音调升高1个半音。"),
+        ("speed", "0.75", "不应发送", "将语速调整为0.75倍。"),
+        ("volume", "-10", "不应发送", "将音量降低10分贝。"),
+        ("emotion", "开心", "不应发送", "将情感转变为开心。"),
+        ("timbre", "低沉磁性的年轻男声", "不应发送", "请将这段音频的音色修改为符合以下描述的声音：“低沉磁性的年轻男声”。"),
+        ("deaccent", "去掉方言口音", "不应发送", "请去掉这段语音里的方言口音，保持说话人音色一致。"),
+        ("nonverbal", "在“欢迎回来”后增加笑声", "不应发送", "在“欢迎回来”后增加笑声。"),
+        ("whisper", "转换成耳语", "不应发送", "用小声耳语的方式把这段话说出来。"),
+        ("enhance", "去噪并去除房间混响", "不应发送", "请对这段语音做纯净化处理，保留所有说话人的人声，并去除其中的噪声和混响，输出与输入等长的干净人声。"),
+        ("quality", "去掉电话感", "不应发送", "请消除这段音频的电话音色，这段音频带有混响，请恢复成无混响的干声，输出自然清晰的人声。"),
+        ("speech_separate", "第一个开始说话的人", "不应发送", "这段音频中只保留第一个开始说话的人对应的语音，去掉其余说话人。"),
+        ("music_separate", "只保留歌声，去掉说话和伴奏", "不应发送", "请只保留歌声，其余声音都去掉。"),
+        ("target_speaker", "欢迎大家来到今天的节目", "不应发送", "请只保留说'欢迎大家来到今天的节目'的人，去掉其他说话人，输出等长纯净人声。"),
+    ],
+)
+def test_each_task_builds_an_official_model_instruction(task_key, primary, secondary, expected):
+    assert build_instruction(task_key, primary, secondary) == expected
 
 
-def test_reference_transcript_reaches_saved_clone_instruction(workspace):
+def test_every_task_has_visible_official_usage_guide(workspace):
+    _, _, functions = workspace
+    assert set(TASK_GUIDES) == {task.key for task in TASKS}
+    for task in TASKS:
+        rendered = functions["update_task"](task.label, None, 1)[-1]
+        assert "官方用法" in rendered
+        assert TASK_GUIDES[task.key].example in rendered
+
+
+@pytest.mark.parametrize(
+    ("task_key", "raw", "expected"),
+    [
+        ("content_edit", "夜色那么美改成白天那么美", "把‘夜色那么美’改成‘白天那么美’"),
+        ("content_edit", "把“今天下午开会”改成“明天上午开会”", "把‘今天下午开会’改成‘明天上午开会’"),
+        ("lyric_edit", "把歌词‘明天你好’改成‘未来你好’", "把这段歌词中的“明天你好”改成“未来你好”。"),
+    ],
+)
+def test_replacement_requests_are_normalized_to_official_templates(task_key, raw, expected):
+    assert build_instruction(task_key, raw, "整段原文不应发送") == expected
+
+
+def test_content_edit_supports_all_official_operation_shapes():
+    assert build_instruction("content_edit", "在“你好”后面加上“呀”") == "在‘你好’后面加上‘呀’"
+    assert build_instruction("content_edit", "删掉“那个”") == "删掉‘那个’"
+    assert build_instruction("content_edit", "删掉“谢谢”后面那个“再见”") == "删掉‘谢谢’后的‘再见’"
+    with pytest.raises(ValueError, match="一次只改一处"):
+        build_instruction("content_edit", "帮我改一下")
+
+
+def test_official_content_and_nonverbal_duration_rules():
+    assert content_scaled_seconds(
+        "content_edit", "把“今天”改成“明天上午”", 10.0, "我们今天开会",
+    ) == pytest.approx(13.3333333333)
+    assert content_scaled_seconds("lyric_edit", "把歌词“今天”改成“明天上午”", 10.0) == pytest.approx(20.0)
+    assert nonverbal_duration_delta("在开头增加呼吸声") == pytest.approx(0.35)
+    assert nonverbal_duration_delta("删除所有笑声") == pytest.approx(-1.05)
+
+
+def test_reference_transcript_is_not_sent_as_clone_instruction(workspace):
     import numpy as np
 
     manager, _, functions = workspace
@@ -248,7 +309,7 @@ def test_reference_transcript_reaches_saved_clone_instruction(workspace):
         1, "AuK-Flash（推荐）", "42", True, False, None,
     )
     request_id = next(updates)[4]
-    assert "reference transcript" in manager.get(request_id).request["instruction"]
+    assert manager.get(request_id).request["instruction"] == 'Say the following with the same voice: "target text"'
     manager.cancel(request_id)
     assert list(updates)[-1][4] == request_id
 
@@ -270,3 +331,134 @@ def test_ui_auto_duration_and_random_seed_are_saved(workspace, monkeypatch):
     assert request["seed_mode"] == "random"
     manager.cancel(request_id)
     list(updates)
+
+
+def test_source_audio_duration_checkbox_locks_and_saves_exact_audio_length(workspace):
+    import numpy as np
+
+    manager, _, functions = workspace
+    audio = (48000, np.zeros(587520, dtype=np.float32))
+    duration_update, budget = functions["update_duration_control"](
+        "语音文字编辑", "删掉“那个”", 3.0, False, True, audio,
+    )
+    assert duration_update["value"] == pytest.approx(12.24)
+    assert duration_update["interactive"] is False
+    assert "按原音频时长" in budget
+    updates = functions["run_task"](
+        "语音文字编辑", "删掉“那个”", "", audio, 3.0,
+        "AuK-Flash（推荐）", "42", True, False, None, None, False, False, True,
+    )
+    request_id = next(updates)[4]
+    request = manager.get(request_id).request
+    assert request["generation_seconds"] == pytest.approx(12.24)
+    assert request["duration_mode"] == "source"
+    manager.cancel(request_id)
+    list(updates)
+
+
+def test_duration_modes_are_mutually_exclusive(workspace):
+    import numpy as np
+
+    _, _, functions = workspace
+    audio = (24000, np.zeros(24000, dtype=np.float32))
+    source_update, duration_update, _ = functions["choose_auto_duration"](
+        "参考声音克隆", "你好", 3.0, True, True, audio,
+    )
+    assert source_update["value"] is False
+    assert duration_update["interactive"] is False
+    auto_update, duration_update, _ = functions["choose_source_duration"](
+        "参考声音克隆", "你好", 3.0, True, True, audio,
+    )
+    assert auto_update["value"] is False
+    assert duration_update["value"] == pytest.approx(1.0)
+
+
+def test_speed_edit_forces_source_scaled_duration_and_ignores_manual_target(workspace):
+    import numpy as np
+
+    manager, _, functions = workspace
+    audio = (48000, np.zeros(460800, dtype=np.float32))  # 9.6 seconds
+    duration_update, budget = functions["update_duration_control"](
+        "速度编辑", "1.5", 12.2, False, False, audio,
+    )
+    assert duration_update["value"] == pytest.approx(6.4)
+    assert duration_update["interactive"] is False
+    assert "速度倍率自动计算" in budget
+    updates = functions["run_task"](
+        "速度编辑", "1.5", "", audio, 12.2,
+        "AuK-Flash（推荐）", "42", True, False, None, None, False, False, False,
+    )
+    request_id = next(updates)[4]
+    request = manager.get(request_id).request
+    assert request["instruction"] == "将语速调整为1.5倍。"
+    assert request["generation_seconds"] == pytest.approx(6.4)
+    assert request["duration_mode"] == "speed"
+    manager.cancel(request_id)
+    list(updates)
+
+
+def test_task_switch_exposes_source_length_option_and_labels_speed_duration(workspace):
+    _, _, functions = workspace
+    content_updates = functions["update_task"]("语音文字编辑", None, 3.0, "删掉“那个”", False, False)
+    assert content_updates[4]["visible"] is True
+    assert content_updates[4]["interactive"] is True
+    speed_updates = functions["update_task"]("速度编辑", None, 3.0, "1.5", False, False)
+    assert speed_updates[4]["interactive"] is False
+    assert speed_updates[5]["label"] == "自动输出时长（原音频时长 ÷ 速度倍率）"
+
+
+def test_emotion_task_uses_official_duration_multiplier(workspace):
+    import numpy as np
+
+    manager, _, functions = workspace
+    audio = (48000, np.zeros(587520, dtype=np.float32))
+    duration_update, budget = functions["update_duration_control"](
+        "情绪编辑", "悲伤", 10.9, False, False, audio,
+    )
+    assert duration_update["value"] == pytest.approx(14.9328)
+    assert duration_update["interactive"] is False
+    assert "官方情绪系数自动计算" in budget
+    updates = functions["run_task"](
+        "情绪编辑", "悲伤", "", audio, 10.9,
+        "AuK-Flash（推荐）", "42", True, False, None, None, False, False, False,
+    )
+    request_id = next(updates)[4]
+    request = manager.get(request_id).request
+    assert request["instruction"] == "将情感转变为悲伤。"
+    assert request["generation_seconds"] == pytest.approx(14.9328)
+    assert request["duration_mode"] == "emotion"
+    manager.cancel(request_id)
+    list(updates)
+
+
+def test_content_and_nonverbal_tasks_lock_official_automatic_duration(workspace):
+    import numpy as np
+
+    _, _, functions = workspace
+    audio = (24_000, np.zeros(240_000, dtype=np.float32))
+    content_update, content_budget = functions["update_duration_control"](
+        "语音文字编辑", "把“今天”改成“明天上午”", 48.0, False, False, audio, "我们今天开会",
+    )
+    assert content_update["value"] == pytest.approx(13.3333333333)
+    assert content_update["interactive"] is False
+    assert "文字变化" in content_budget
+    nonverbal_update, nonverbal_budget = functions["update_duration_control"](
+        "非语言声音编辑", "在开头增加笑声", 48.0, False, False, audio,
+    )
+    assert nonverbal_update["value"] == pytest.approx(10.75)
+    assert nonverbal_update["interactive"] is False
+    assert "声音增删" in nonverbal_budget
+
+
+def test_explicit_trim_changes_the_audio_value_used_for_budget(workspace):
+    import numpy as np
+
+    _, _, functions = workspace
+    audio = (44_100, np.zeros(44_100 * 48, dtype=np.float32))
+    clipped, duration_update, budget, info = functions["apply_source_trim"](
+        "去口音", "去掉方言口音", "", 48.0, False, False, audio, 22.0, 26.0,
+    )
+    assert clipped[1].shape[0] == 44_100 * 4
+    assert duration_update["value"] == pytest.approx(4.0)
+    assert "输入 4.00s + 输出 4.00s" in budget
+    assert "实际提交输入：4.00 秒" in info

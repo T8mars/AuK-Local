@@ -14,11 +14,30 @@ from auk_local.diagnostics import inspect_models
 from auk_local.task_templates import TASKS, build_instruction
 
 
-def test_all_sixteen_tasks_build_instructions():
-    assert len(TASKS) == 16
+def test_all_official_tasks_build_instructions():
+    samples = {
+        "instruct_tts": ("测试内容", "自然声音"),
+        "zero_shot_tts": ("测试内容", ""),
+        "content_edit": ("把“今天”改成“明天”", ""),
+        "lyric_edit": ("把歌词“今天”改成“明天”", ""),
+        "pitch": ("+1", ""),
+        "speed": ("0.75", ""),
+        "volume": ("-5", ""),
+        "emotion": ("开心", ""),
+        "timbre": ("低沉男声", ""),
+        "deaccent": ("去掉方言口音", ""),
+        "nonverbal": ("在语音开头增加笑声", ""),
+        "whisper": ("转换成耳语", ""),
+        "enhance": ("去噪并去混响", ""),
+        "quality": ("去掉电话感", ""),
+        "speech_separate": ("第一个开始说话的人", ""),
+        "music_separate": ("只保留歌声", ""),
+        "target_speaker": ("测试内容", ""),
+    }
+    assert len(TASKS) == 17
     for task in TASKS:
-        instruction = build_instruction(task.key, "测试内容", "补充条件")
-        assert "测试内容" in instruction
+        instruction = build_instruction(task.key, *samples[task.key])
+        assert instruction
 
 
 def test_float_audio_round_trip_is_lossless():

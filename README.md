@@ -32,14 +32,26 @@ Start the app through `AuK-Local.exe` to use automatic restart. The BAT files re
 - Light Chinese Gradio workspace on `127.0.0.1:7860`
 - Local FastAPI service with a per-install session token
 - Queued jobs, cancellation, retry, history, audio output, and JSON metadata
-- AuK-Flash and AuK Base model selection
+- AuK Base by default for editing quality, with AuK-Flash available for fast previews
 - Automatic TTS duration to prevent short text from continuing into an internal conditioning marker
+- Official per-task duration rules derived from the audio actually submitted after trimming
 - Random Seed draw mode by default, with fixed Seed available for reproducibility
 - Live Chinese phase and elapsed-time updates while a task is running
+- A task-specific usage card with official input constraints and a copyable example for all 17 UI entries, covering all 16 upstream low-level tasks
 - Model diagnostics and resumable fixed-revision model downloads
 - Signed code updates with backup and rollback
 
 The native ComfyUI package is maintained in [Comfyui-Auk-T8](https://github.com/T8mars/Comfyui-Auk-T8). It loads models directly in the ComfyUI process and does not call the AuK Local 7860 service.
+
+## Task input guide
+
+Selecting a task updates the on-page guide with its audio requirement, allowed values, official input shape, example, and task-specific warning. Speech content edits and lyric edits accept one edit per run. Reference voice cloning accepts only the new target text alongside a clean reference recording; a reference transcript or voice description is not sent to the model.
+
+Pitch, volume, timbre, de-accent, whisper, enhancement, quality repair, and separation match the actual submitted audio. Emotion follows AuK's official duration coefficients: 1.22× for sad, 1.16× for fearful, and 1.06× for the other supported emotions. Speech and lyric edits estimate their duration from the text added or removed. Nonverbal edits add or remove the official event duration.
+
+Speed editing always locks the duration control and calculates the target as `source duration / speed multiplier`. A manual target is never used for this task, because extra output time can make the model fill the tail with damaged audio.
+
+Selecting a range in the browser audio waveform does not replace the source file. Enter the trim start and end, then click **Apply trim**. The page displays the current actual input duration and uses only that material for the 30-second budget and submission. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
 
 ## Release contents
 

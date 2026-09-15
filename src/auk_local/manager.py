@@ -226,8 +226,12 @@ class TaskManager:
         cpu_offload = _boolean(payload.get("cpu_offload", True), "cpu_offload")
         keep_loaded = _boolean(payload.get("keep_loaded", False), "keep_loaded")
         duration_mode = str(payload.get("duration_mode") or "manual").strip().lower()
-        if duration_mode not in {"auto", "manual"}:
-            raise ValueError("duration_mode 必须是 auto 或 manual")
+        if duration_mode not in {
+            "auto", "manual", "source", "source_auto", "speed", "emotion", "content", "nonverbal",
+        }:
+            raise ValueError(
+                "duration_mode 必须是 auto、manual、source、source_auto、speed、emotion、content 或 nonverbal"
+            )
         seed_mode = str(payload.get("seed_mode") or "fixed").strip().lower()
         if seed_mode not in {"random", "fixed"}:
             raise ValueError("seed_mode 必须是 random 或 fixed")
