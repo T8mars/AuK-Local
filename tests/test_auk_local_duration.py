@@ -10,7 +10,7 @@ def test_verified_short_phrase_uses_1_7_seconds():
 
 
 def test_duration_estimator_accounts_for_words_and_punctuation():
-    assert estimate_tts_seconds("Hello world!") > estimate_tts_seconds("Hello")
+    assert estimate_tts_seconds("Hello world today!") > estimate_tts_seconds("Hello world")
     assert estimate_tts_seconds("你好，世界！") > estimate_tts_seconds("你好世界")
 
 
