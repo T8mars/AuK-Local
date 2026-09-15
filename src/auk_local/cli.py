@@ -63,14 +63,20 @@ def main() -> None:
             raise SystemExit("AuK Local 首版只允许绑定本机 loopback")
         if args.open_browser and not args.no_ui:
             webbrowser.open(f"http://127.0.0.1:{args.port}")
-        uvicorn.run(
-            create_app(paths, with_ui=not args.no_ui),
+        application = create_app(paths, with_ui=not args.no_ui)
+        configuration = uvicorn.Config(
+            application,
             host=args.host,
             port=args.port,
             log_level="info",
             access_log=False,
             timeout_graceful_shutdown=5,
         )
+        server = uvicorn.Server(configuration)
+        application.state.restart_controller.attach(server)
+        server.run()
+        if application.state.restart_controller.exit_code:
+            raise SystemExit(application.state.restart_controller.exit_code)
 
 
 if __name__ == "__main__":

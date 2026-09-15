@@ -27,6 +27,11 @@ echo.
 "runtime\python.exe" -m auk_local.cli --root "%CD%" serve --host 127.0.0.1 --port 7860
 set "AUK_EXIT_CODE=%ERRORLEVEL%"
 echo.
+if "%AUK_EXIT_CODE%"=="42" (
+  echo [错误] 自动更新需要通过根目录的 AuK-Local.exe 启动；本次更新尚未应用。
+  echo [提示] 请关闭窗口并双击 AuK-Local.exe，更新包仍已安全保留。
+  goto :keep_open
+)
 if "%AUK_EXIT_CODE%"=="0" goto :stopped_cleanly
 echo [错误] AuK 服务异常退出，退出码：%AUK_EXIT_CODE%
 echo [提示] 可双击“环境诊断.cmd”检查运行环境和模型文件。

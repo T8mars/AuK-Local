@@ -47,6 +47,7 @@ gongfeng.html
 .env
 .env.*
 !.env.example
+.secrets/
 
 # internal docs (local only, not published)
 agent_docs/

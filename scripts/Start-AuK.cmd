@@ -29,6 +29,10 @@ start "AuK browser helper" /b powershell.exe -NoProfile -WindowStyle Hidden -Exe
 "runtime\python.exe" -m auk_local.cli --root "%CD%" serve --host 127.0.0.1 --port 7860
 set "AUK_EXIT_CODE=%ERRORLEVEL%"
 echo.
+if "%AUK_EXIT_CODE%"=="42" (
+  echo [AuK] 更新包已经校验完成，正在交给独立更新器安装并重启。
+  exit /b 42
+)
 if "%AUK_EXIT_CODE%"=="0" goto :stopped_cleanly
 echo [错误] AuK 服务异常退出，退出码：%AUK_EXIT_CODE%
 echo [提示] 可双击“环境诊断.cmd”检查运行环境和模型文件。

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import sqlite3
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,32 @@ from .config import LocalPaths, configure_bundled_tools
 from .diagnostics import runtime_diagnostic
 from .manager import TaskManager
 from .version import PROTOCOL_VERSION, VERSION
+
+
+ACTIVE_TASK_STATES = {"queued", "loading", "encoding", "sampling", "decoding", "saving", "cancelling"}
+
+
+class RestartController:
+    def __init__(self) -> None:
+        self.server = None
+        self.exit_code = 0
+
+    def attach(self, server) -> None:
+        self.server = server
+
+    def request_update_restart(self) -> None:
+        if os.environ.get("AUK_LAUNCHED_BY_EXE") != "1":
+            raise RuntimeError("一键更新需要通过根目录的 AuK-Local.exe 启动程序")
+        if self.server is None:
+            raise RuntimeError("服务尚未连接启动器，无法安全重启")
+        self.exit_code = 42
+
+        def stop_after_response() -> None:
+            self.server.should_exit = True
+
+        timer = threading.Timer(1.25, stop_after_response)
+        timer.daemon = True
+        timer.start()
 
 
 def load_or_create_token(paths: LocalPaths) -> str:
@@ -31,6 +59,10 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
 
     configure_bundled_tools(paths)
     task_manager = manager or TaskManager(paths)
+    from .updater import UpdateError, UpdateManager
+
+    update_manager = UpdateManager(paths)
+    restart_controller = RestartController()
     token = load_or_create_token(paths)
     instance_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -41,6 +73,12 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
 
     app = FastAPI(title="AuK Local", version=VERSION, lifespan=lifespan)
     app.state.task_manager = task_manager
+    app.state.update_manager = update_manager
+    app.state.restart_controller = restart_controller
+
+    def ensure_no_active_tasks() -> None:
+        if any(record.state in ACTIVE_TASK_STATES for record in task_manager.store.list_recent(100)):
+            raise UpdateError("仍有任务在排队或运行，请等待任务结束后再更新")
 
     @app.exception_handler(sqlite3.Error)
     @app.exception_handler(OSError)
@@ -69,6 +107,24 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
     @app.get("/api/v1/diagnostics", dependencies=[Depends(authorize)])
     def diagnostics() -> dict[str, Any]:
         return runtime_diagnostic(paths)
+
+    @app.get("/api/v1/update/check", dependencies=[Depends(authorize)])
+    def check_update() -> dict[str, Any]:
+        try:
+            result = update_manager.check()
+        except UpdateError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {key: value for key, value in result.items() if key not in {"payload", "asset_url"}}
+
+    @app.post("/api/v1/update/install", dependencies=[Depends(authorize)])
+    def install_update() -> dict[str, Any]:
+        try:
+            ensure_no_active_tasks()
+            result = update_manager.stage_latest()
+            restart_controller.request_update_restart()
+            return result
+        except (UpdateError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/v1/tasks", dependencies=[Depends(authorize)])
     def submit_task(payload: dict[str, Any]):
@@ -155,10 +211,19 @@ def create_app(paths: LocalPaths, *, with_ui: bool = True, manager: TaskManager 
         theme = gr.themes.Soft(primary_hue="pink", secondary_hue="blue", neutral_hue="slate")
         app = gr.mount_gradio_app(
             app,
-            build_ui(task_manager, paths),
+            build_ui(
+                task_manager,
+                paths,
+                update_manager=update_manager,
+                request_update_restart=restart_controller.request_update_restart,
+                ensure_no_active_tasks=ensure_no_active_tasks,
+            ),
             path="/",
             show_error=True,
             theme=theme,
             css=CSS,
         )
+        app.state.task_manager = task_manager
+        app.state.update_manager = update_manager
+        app.state.restart_controller = restart_controller
     return app

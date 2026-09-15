@@ -11,6 +11,8 @@ from pathlib import Path
 from .audio import encode_gradio_audio
 from .manager import TaskManager
 from .task_templates import TASK_BY_KEY, TASK_BY_LABEL, TASKS, build_instruction
+from .updater import UpdateError, UpdateManager
+from .version import VERSION
 
 
 CSS = """
@@ -29,6 +31,9 @@ body, .gradio-container { background: #f8fafc !important; color: #0f172a !import
 .auk-model-status { margin: 0 0 14px; padding: 11px 14px; border: 1px solid #e2e8f0; border-radius: 12px;
   background: rgba(255,255,255,.86); color: #475569; }
 .auk-model-status strong { color: #0f172a; }
+.auk-updater { margin: 0 0 14px; padding: 14px !important; border: 1px solid rgba(251,114,153,.32);
+  border-radius: 14px; background: #fff7fb; box-shadow: 0 4px 14px rgba(217,79,145,.08); }
+.auk-updater button { min-height: 46px !important; font-weight: 750 !important; }
 .auk-actions { position: fixed !important; left: 50%; bottom: 12px; transform: translateX(-50%);
   width: min(1160px, calc(100% - 32px));
   z-index: 20; padding: 10px !important; border: 1px solid rgba(251,114,153,.25); border-radius: 14px;
@@ -36,12 +41,48 @@ body, .gradio-container { background: #f8fafc !important; color: #0f172a !import
 """
 
 
-def build_ui(manager: TaskManager, paths):
+def build_ui(
+    manager: TaskManager,
+    paths,
+    *,
+    update_manager: UpdateManager | None = None,
+    request_update_restart=None,
+    ensure_no_active_tasks=None,
+):
     import gradio as gr
 
     from .diagnostics import inspect_models
 
     task_labels = [task.label for task in TASKS]
+    updater = update_manager or UpdateManager(paths)
+
+    def check_program_update():
+        try:
+            result = updater.check()
+            if result["available"]:
+                note = f" · {result['notes']}" if result.get("notes") else ""
+                return (
+                    f"发现新版 {result['version']}（当前 {VERSION}）{note}。签名已验证，可以安装。",
+                    gr.update(interactive=True),
+                )
+            return f"当前版本 {VERSION} 已是最新版。", gr.update(interactive=False)
+        except UpdateError as exc:
+            return f"检查更新失败：{exc}", gr.update(interactive=False)
+
+    def install_program_update():
+        try:
+            if ensure_no_active_tasks is not None:
+                ensure_no_active_tasks()
+            result = updater.stage_latest()
+            if request_update_restart is None:
+                raise RuntimeError("当前启动方式不支持自动重启，请使用根目录 AuK-Local.exe")
+            request_update_restart()
+            return (
+                f"版本 {result['version']} 已下载并逐文件校验。程序将自动关闭、安装并重新启动；模型和用户数据不会被修改。",
+                gr.update(interactive=False),
+            )
+        except (UpdateError, RuntimeError, sqlite3.Error, OSError) as exc:
+            return f"安装更新失败：{exc}", gr.update(interactive=True)
 
     def budget_html(label, audio_value, duration):
         task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
@@ -293,6 +334,15 @@ def build_ui(manager: TaskManager, paths):
             "<h1>AuK 本地音频工作台</h1><div class='auk-subtitle'>语音生成、编辑、增强与分离 · 本地运行</div></section>"
         )
         gr.HTML(f"<div class='auk-model-status'>{model_status}</div>")
+        with gr.Row(elem_classes=["auk-updater"]):
+            update_status = gr.Textbox(
+                label="程序自动更新",
+                value=f"当前版本 {VERSION} · 更新只替换程序文件，不修改模型、Python、任务记录和输出。",
+                interactive=False,
+                scale=6,
+            )
+            check_update_button = gr.Button("🔄 检查更新", scale=2)
+            install_update_button = gr.Button("⬇ 立即更新并重启", variant="primary", interactive=False, scale=2)
         current_request = gr.State("")
         last_audio = gr.State(None)
         view_state = gr.State({"owner": None})
@@ -364,5 +414,15 @@ def build_ui(manager: TaskManager, paths):
             view_task,
             [retry_request, last_audio, view_state],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
+        )
+        check_update_button.click(
+            check_program_update,
+            outputs=[update_status, install_update_button],
+            queue=False,
+        )
+        install_update_button.click(
+            install_program_update,
+            outputs=[update_status, install_update_button],
+            queue=False,
         )
     return demo

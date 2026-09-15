@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 
 [assembly: AssemblyTitle("AuK Local Launcher")]
@@ -9,8 +10,8 @@ using System.Text;
 [assembly: AssemblyCompany("T8star-Aix")]
 [assembly: AssemblyProduct("AuK Local")]
 [assembly: AssemblyCopyright("Copyright © T8star-Aix 2026")]
-[assembly: AssemblyVersion("0.1.1.0")]
-[assembly: AssemblyFileVersion("0.1.1.0")]
+[assembly: AssemblyVersion("0.2.0.0")]
+[assembly: AssemblyFileVersion("0.2.0.0")]
 
 internal static class AuKLauncher
 {
@@ -34,6 +35,11 @@ internal static class AuKLauncher
         {
             Console.WriteLine(packageRoot);
             return 0;
+        }
+
+        if (args.Length == 3 && args[0] == "--verify-update-signature")
+        {
+            return VerifyUpdateSignature(packageRoot, args[1], args[2]);
         }
 
         if (!File.Exists(python))
@@ -64,6 +70,7 @@ internal static class AuKLauncher
             info.WorkingDirectory = packageRoot;
             info.UseShellExecute = false;
             info.CreateNoWindow = false;
+            info.EnvironmentVariables["AUK_LAUNCHED_BY_EXE"] = "1";
 
             using (Process process = Process.Start(info))
             {
@@ -72,6 +79,10 @@ internal static class AuKLauncher
                     return Fail("无法创建 AuK 启动进程。");
                 }
                 process.WaitForExit();
+                if (process.ExitCode == 42)
+                {
+                    return StartUpdateApplier(packageRoot);
+                }
                 return process.ExitCode;
             }
         }
@@ -79,6 +90,71 @@ internal static class AuKLauncher
         {
             return Fail("启动 AuK 失败：" + error.Message);
         }
+    }
+
+    private static int VerifyUpdateSignature(string packageRoot, string payloadPath, string signatureBase64)
+    {
+        string publicKeyPath = Path.Combine(packageRoot, "src", "auk_local", "update-public-key.xml");
+        if (!File.Exists(publicKeyPath) || !File.Exists(payloadPath))
+        {
+            return 2;
+        }
+        try
+        {
+            byte[] payload = File.ReadAllBytes(payloadPath);
+            byte[] signature = Convert.FromBase64String(signatureBase64);
+            using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider())
+            {
+                rsa.FromXmlString(File.ReadAllText(publicKeyPath, Encoding.UTF8));
+                bool valid = rsa.VerifyData(payload, CryptoConfig.MapNameToOID("SHA256"), signature);
+                if (valid)
+                {
+                    Console.WriteLine("AuK update signature: PASS");
+                    return 0;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            return 2;
+        }
+        return 2;
+    }
+
+    private static int StartUpdateApplier(string packageRoot)
+    {
+        string updater = Path.Combine(packageRoot, "scripts", "Apply-AuK-Update.ps1");
+        if (!File.Exists(updater))
+        {
+            return Fail("更新已经准备完成，但缺少 scripts\\Apply-AuK-Update.ps1。");
+        }
+        try
+        {
+            ProcessStartInfo info = new ProcessStartInfo();
+            info.FileName = "powershell.exe";
+            info.Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(updater)
+                + " -PackageRoot " + Quote(packageRoot)
+                + " -ParentProcessId " + Process.GetCurrentProcess().Id.ToString();
+            info.WorkingDirectory = packageRoot;
+            info.UseShellExecute = false;
+            info.CreateNoWindow = false;
+            Process child = Process.Start(info);
+            if (child == null)
+            {
+                return Fail("无法启动独立更新进程。");
+            }
+            Console.WriteLine("[AuK] 更新器已接管，正在关闭启动器...");
+            return 0;
+        }
+        catch (Exception error)
+        {
+            return Fail("无法启动更新器：" + error.Message);
+        }
+    }
+
+    private static string Quote(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
     private static int Fail(string message)
