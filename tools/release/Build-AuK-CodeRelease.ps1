@@ -1,6 +1,6 @@
 param(
     [string]$PackageRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path,
-    [string]$PrivateKeyPath = (Join-Path $PackageRoot '.secrets\auk-update-private.xml')
+    [string]$PrivateKeyPath = (Join-Path $env:LOCALAPPDATA 'T8star-Aix\AuK-Local\release-signing-private.xml')
 )
 
 $ErrorActionPreference = 'Stop'
