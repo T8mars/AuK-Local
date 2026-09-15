@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from auk_local.config import LocalPaths  # noqa: E402
-from auk_local.updater import UpdateManager  # noqa: E402
+from auk_local.config import LocalPaths
+from auk_local.updater import UpdateManager
 
 
 def main() -> int:
