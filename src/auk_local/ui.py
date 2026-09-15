@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import secrets
 import sqlite3
 import threading
 import time
@@ -9,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from .audio import encode_gradio_audio
+from .duration import TTS_TASK_KEYS, estimate_tts_seconds
 from .manager import TaskManager
 from .task_templates import TASK_BY_KEY, TASK_BY_LABEL, TASKS, build_instruction
 from .updater import UpdateError, UpdateManager
@@ -84,7 +86,13 @@ def build_ui(
         except (UpdateError, RuntimeError, sqlite3.Error, OSError) as exc:
             return f"安装更新失败：{exc}", gr.update(interactive=True)
 
-    def budget_html(label, audio_value, duration):
+    def effective_ui_duration(label, primary, duration, auto_duration):
+        task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
+        if task is not None and task.key in TTS_TASK_KEYS and bool(auto_duration):
+            return estimate_tts_seconds(primary), True
+        return float(duration), False
+
+    def budget_html(label, audio_value, duration, primary="", auto_duration=False):
         task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
         if task is None:
             return "<div class='auk-budget'>请选择任务类型。</div>"
@@ -96,7 +104,7 @@ def build_ui(
                 if not math.isfinite(sample_rate) or sample_rate <= 0 or len(samples) == 0:
                     raise ValueError("invalid audio")
                 source_seconds = len(samples) / sample_rate
-            target_seconds = float(duration)
+            target_seconds, estimated = effective_ui_duration(label, primary, duration, auto_duration)
             if not math.isfinite(target_seconds) or target_seconds <= 0:
                 raise ValueError("invalid duration")
         except (TypeError, ValueError, OverflowError):
@@ -104,11 +112,23 @@ def build_ui(
         total = source_seconds + target_seconds
         remaining = max(0.0, 30.0 - total)
         state = "可提交" if total <= 30.0 + 1e-9 else "已超出限制"
+        mode = "自动估算" if estimated else "当前设置"
         return (
-            "<div class='auk-budget'>30 秒预算："
+            f"<div class='auk-budget'>{mode} · 30 秒预算："
             f"输入 {source_seconds:.2f}s + 输出 {target_seconds:.2f}s = {total:.2f}s"
             f" · 剩余 {remaining:.2f}s · {state}</div>"
         )
+
+    def update_duration_control(label, primary, duration, auto_duration, audio_value):
+        try:
+            target_seconds, estimated = effective_ui_duration(label, primary, duration, auto_duration)
+            update = gr.update(value=target_seconds, interactive=not estimated)
+        except (TypeError, ValueError, OverflowError):
+            update = gr.update(interactive=not bool(auto_duration))
+        return update, budget_html(label, audio_value, duration, primary, auto_duration)
+
+    def update_seed_control(random_seed):
+        return gr.update(interactive=not bool(random_seed))
 
     def update_task(label, audio_value, duration):
         task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
@@ -155,6 +175,7 @@ def build_ui(
                     record.request_id,
                     task.label if task else record.request.get("task_key", ""),
                     record.request.get("model", ""),
+                    record.request.get("seed", ""),
                     state_labels.get(record.state, record.state),
                     record.error or "",
                 ]
@@ -165,6 +186,16 @@ def build_ui(
         if last_audio and not Path(last_audio).is_file():
             last_audio = None
         last_phase = None
+        last_emit = 0.0
+        phase_labels = {
+            "queued": "等待执行",
+            "loading": "阶段 1/5 · 正在加载模型（首次通常需要 30–110 秒）",
+            "encoding": "阶段 2/5 · 正在编码文本和参考音频",
+            "sampling": "阶段 3/5 · 正在生成音频",
+            "decoding": "阶段 4/5 · 正在检查并解码结果",
+            "saving": "阶段 5/5 · 正在保存 WAV 和运行参数",
+            "cancelling": "正在取消",
+        }
         while True:
             if not is_current():
                 return
@@ -183,11 +214,19 @@ def build_ui(
                     None, last_audio, "", request_id, last_audio, recent_rows(),
                 )
                 return
-            if record.phase != last_phase:
-                last_phase = record.phase
-                yield f"任务 {request_id[:8]} · {record.phase}", None, last_audio, "", request_id, last_audio, recent_rows()
             if record.state in {"succeeded", "failed", "cancelled", "interrupted"}:
                 break
+            now = time.monotonic()
+            if record.phase != last_phase or now - last_emit >= 1.0:
+                last_phase = record.phase
+                last_emit = now
+                elapsed = max(0, int(time.time() - record.created_at))
+                seed_value = record.request.get("seed", "")
+                phase_text = phase_labels.get(record.phase, record.phase)
+                yield (
+                    f"任务 {request_id[:8]} · Seed {seed_value} · {phase_text} · 已用时 {elapsed} 秒",
+                    None, last_audio, "", request_id, last_audio, recent_rows(),
+                )
             time.sleep(0.25)
         if record.state == "succeeded":
             if not record.result_path or not Path(record.result_path).is_file():
@@ -199,7 +238,11 @@ def build_ui(
                 if not record.metadata_path:
                     raise FileNotFoundError("参数路径缺失")
                 metadata = Path(record.metadata_path).read_text(encoding="utf-8")
-                json.loads(metadata)
+                details = json.loads(metadata)
+                if "seed" in details:
+                    message += f" · Seed {details['seed']}"
+                if "elapsed_seconds" in details:
+                    message += f" · 用时 {float(details['elapsed_seconds']):.1f} 秒"
             except (OSError, ValueError):
                 message = "音频已生成，但参数文件缺失、损坏或不可读。"
                 metadata = ""
@@ -255,7 +298,7 @@ def build_ui(
         return message, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), recent_rows()
 
     def run_task(label, primary, secondary, audio_value, duration, model_label, seed, cpu_offload, keep_loaded,
-                 last_audio, view_state=None):
+                 last_audio, view_state=None, auto_duration=False, random_seed=False):
         ticket = begin_action(view_state)
         try:
             task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
@@ -264,14 +307,18 @@ def build_ui(
             if model_label not in {"AuK-Flash（推荐）", "AuK Base"}:
                 raise ValueError("请选择模型")
             is_flash = model_label == "AuK-Flash（推荐）"
+            resolved_duration, duration_is_auto = effective_ui_duration(label, primary, duration, auto_duration)
+            resolved_seed = secrets.randbelow(2**31) if bool(random_seed) else seed
             payload = {
                 "request_id": str(uuid.uuid4()),
                 "task_key": task.key,
                 "primary": primary,
                 "secondary": secondary,
-                "generation_seconds": duration,
+                "generation_seconds": resolved_duration,
+                "duration_mode": "auto" if duration_is_auto else "manual",
                 "model": "flash" if is_flash else "base",
-                "seed": seed,
+                "seed": resolved_seed,
+                "seed_mode": "random" if bool(random_seed) else "fixed",
                 "cpu_offload": cpu_offload,
                 "keep_loaded": keep_loaded,
                 "nfe_steps": 4 if is_flash else 32,
@@ -352,15 +399,22 @@ def build_ui(
                 primary = gr.Textbox(label=TASKS[0].primary_label, lines=4, value="你好，欢迎使用 AuK。")
                 secondary = gr.Textbox(label=TASKS[0].secondary_label, lines=3, value="自然、清晰、温暖")
                 source_audio = gr.Audio(label="待处理音频", type="numpy", visible=False)
-                budget = gr.HTML(budget_html(task_labels[0], None, 3.0))
+                initial_duration = estimate_tts_seconds("你好，欢迎使用 AuK。")
+                budget = gr.HTML(budget_html(task_labels[0], None, initial_duration, "你好，欢迎使用 AuK。", True))
                 with gr.Row():
-                    duration = gr.Slider(0.2, 30.0, value=3.0, step=0.1, label="目标时长（秒）")
+                    duration = gr.Slider(
+                        0.2, 30.0, value=initial_duration, step=0.1,
+                        label="目标时长（秒）", interactive=False,
+                    )
                     model = gr.Dropdown(["AuK-Flash（推荐）", "AuK Base"], value="AuK-Flash（推荐）", label="模型")
+                with gr.Row():
+                    auto_duration = gr.Checkbox(value=True, label="自动估算 TTS 时长（避免结尾多读）")
+                    random_seed = gr.Checkbox(value=True, label="🎲 每次使用随机 Seed（抽卡）")
+                    seed = gr.Textbox(value="42", label="固定 Seed（关闭随机后生效）", max_lines=1, interactive=False)
                 with gr.Row(elem_classes=["auk-actions"]):
                     run_button = gr.Button("开始生成", variant="primary")
                     cancel_button = gr.Button("取消正在查看的任务")
                 with gr.Accordion("高级参数", open=False):
-                    seed = gr.Textbox(value="42", label="Seed", max_lines=1)
                     cpu_offload = gr.Checkbox(value=True, label="CPU Offload（24GB显存推荐）")
                     keep_loaded = gr.Checkbox(value=False, label="生成后保持模型驻留")
                     instruction_preview = gr.Textbox(
@@ -379,7 +433,7 @@ def build_ui(
         with gr.Accordion("历史记录与失败重试", open=False):
             refresh_history = gr.Button("刷新历史", size="sm")
             history = gr.Dataframe(
-                headers=["时间", "任务 ID", "类型", "模型", "状态", "错误"],
+                headers=["时间", "任务 ID", "类型", "模型", "Seed", "状态", "错误"],
                 value=recent_rows(),
                 interactive=False,
                 wrap=True,
@@ -393,13 +447,30 @@ def build_ui(
             [task_choice, source_audio, duration],
             [primary, secondary, source_audio, budget],
         )
-        source_audio.change(budget_html, [task_choice, source_audio, duration], budget)
-        duration.change(budget_html, [task_choice, source_audio, duration], budget)
+        source_audio.change(budget_html, [task_choice, source_audio, duration, primary, auto_duration], budget)
+        duration.change(budget_html, [task_choice, source_audio, duration, primary, auto_duration], budget)
+        task_choice.change(
+            update_duration_control,
+            [task_choice, primary, duration, auto_duration, source_audio],
+            [duration, budget],
+        )
+        primary.change(
+            update_duration_control,
+            [task_choice, primary, duration, auto_duration, source_audio],
+            [duration, budget],
+        )
+        auto_duration.change(
+            update_duration_control,
+            [task_choice, primary, duration, auto_duration, source_audio],
+            [duration, budget],
+        )
+        random_seed.change(update_seed_control, random_seed, seed, queue=False)
         for component in (task_choice, primary, secondary):
             component.change(preview_instruction, [task_choice, primary, secondary], instruction_preview)
         run_button.click(
             run_task,
-            [task_choice, primary, secondary, source_audio, duration, model, seed, cpu_offload, keep_loaded, last_audio, view_state],
+            [task_choice, primary, secondary, source_audio, duration, model, seed, cpu_offload, keep_loaded,
+             last_audio, view_state, auto_duration, random_seed],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
         cancel_button.click(cancel_task, current_request, status, queue=False)

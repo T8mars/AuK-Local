@@ -225,6 +225,12 @@ class TaskManager:
             raise ValueError("AuK-Flash 固定使用 NFE=4、CFG=0、sway=-1 占位")
         cpu_offload = _boolean(payload.get("cpu_offload", True), "cpu_offload")
         keep_loaded = _boolean(payload.get("keep_loaded", False), "keep_loaded")
+        duration_mode = str(payload.get("duration_mode") or "manual").strip().lower()
+        if duration_mode not in {"auto", "manual"}:
+            raise ValueError("duration_mode 必须是 auto 或 manual")
+        seed_mode = str(payload.get("seed_mode") or "fixed").strip().lower()
+        if seed_mode not in {"random", "fixed"}:
+            raise ValueError("seed_mode 必须是 random 或 fixed")
         return {
             "request_id": request_id,
             "task_key": task_key,
@@ -239,6 +245,8 @@ class TaskManager:
             "sway_sampling_coef": sway,
             "cpu_offload": cpu_offload,
             "keep_loaded": keep_loaded,
+            "duration_mode": duration_mode,
+            "seed_mode": seed_mode,
             "client": str(payload.get("client") or "api")[:32],
         }
 

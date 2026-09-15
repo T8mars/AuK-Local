@@ -33,6 +33,9 @@ Start the app through `AuK-Local.exe` to use automatic restart. The BAT files re
 - Local FastAPI service with a per-install session token
 - Queued jobs, cancellation, retry, history, audio output, and JSON metadata
 - AuK-Flash and AuK Base model selection
+- Automatic TTS duration to prevent short text from continuing into an internal conditioning marker
+- Random Seed draw mode by default, with fixed Seed available for reproducibility
+- Live Chinese phase and elapsed-time updates while a task is running
 - Model diagnostics and resumable fixed-revision model downloads
 - Signed code updates with backup and rollback
 

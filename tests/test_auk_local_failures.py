@@ -95,7 +95,7 @@ def test_ui_stops_waiting_when_scheduler_pauses(tmp_path):
         demo = build_ui(manager, paths)
         run = next(fn.fn for fn in demo.fns.values() if fn.fn and fn.fn.__name__ == "run_task")
         updates = run("描述生成语音", "test", "", None, 1.0, "AuK-Flash（推荐）", 42, True, False, None)
-        assert "queued" in next(updates)[0]
+        assert "等待执行" in next(updates)[0]
         manager._set_scheduler_state("paused", "synthetic storage failure")
         assert "任务已暂停" in next(updates)[0]
         with pytest.raises(StopIteration):

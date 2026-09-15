@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auk"
-version = "0.2.0"
+version = "0.2.1"
 description = "AuK: An Open-Source Foundational Model for Speech Generation and Editing"
 readme = "README.md"
 license = { text = "MIT License" }

@@ -199,7 +199,7 @@ def test_ui_can_reopen_successful_history_without_resubmitting(tmp_path):
         final = list(view(record.request_id, None))[-1]
         assert final[1] == str(result)
         assert len(manager.store.list_recent()) == 1
-        seed = next(block for block in demo.blocks.values() if getattr(block, "label", None) == "Seed")
+        seed = next(block for block in demo.blocks.values() if (getattr(block, "label", "") or "").startswith("固定 Seed"))
         assert seed.get_block_name() == "textbox"
     finally:
         manager.close()

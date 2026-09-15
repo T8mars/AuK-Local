@@ -81,7 +81,7 @@ $payload = [ordered]@{
     channel = 'stable'
     version = $Version
     published_at = [DateTimeOffset]::UtcNow.ToString('o')
-    notes = '新增签名自动更新、逐文件校验、失败回滚和一键重启；更新不会覆盖模型、Python、任务数据或输出。'
+    notes = 'Adds automatic TTS duration to prevent spoken no-prompt tails, random Seed draws by default, and live task stages with elapsed time.'
     compatibility = [ordered]@{ service_protocol = '1.0' }
     package = [ordered]@{
         name = $ArchiveName

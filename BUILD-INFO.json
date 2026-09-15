@@ -1,6 +1,6 @@
 {
   "package": "AuK-Local",
-  "package_version": "0.2.0",
+  "package_version": "0.2.1",
   "built_at": "2026-09-15T22:38:00+08:00",
   "upstream_commit": "0dfd4d39015078351217b09a40e263355aaa646b",
   "python": "3.10.20",

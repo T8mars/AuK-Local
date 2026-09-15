@@ -156,6 +156,7 @@ def test_gradio_completion_packet_does_not_replay_superseded_status_or_clear_aud
     async def exercise():
         running = await call("run_task", [
             "描述生成语音", "test", "", None, 1, "AuK-Flash（推荐）", "42", True, False, None, None,
+            True, True,
         ])
         assert running["is_generating"]
         viewed = await call("view_task", [history_id, None, None])
@@ -250,3 +251,22 @@ def test_reference_transcript_reaches_saved_clone_instruction(workspace):
     assert "reference transcript" in manager.get(request_id).request["instruction"]
     manager.cancel(request_id)
     assert list(updates)[-1][4] == request_id
+
+
+def test_ui_auto_duration_and_random_seed_are_saved(workspace, monkeypatch):
+    import auk_local.ui
+
+    manager, _, functions = workspace
+    monkeypatch.setattr(auk_local.ui.secrets, "randbelow", lambda _limit: 123456789)
+    updates = functions["run_task"](
+        "描述生成语音", "一只小猫在叫啊", "自然、清晰、温暖", None,
+        3.0, "AuK-Flash（推荐）", "42", True, False, None, None, True, True,
+    )
+    request_id = next(updates)[4]
+    request = manager.get(request_id).request
+    assert request["generation_seconds"] == 1.7
+    assert request["duration_mode"] == "auto"
+    assert request["seed"] == 123456789
+    assert request["seed_mode"] == "random"
+    manager.cancel(request_id)
+    list(updates)
