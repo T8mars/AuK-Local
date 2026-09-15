@@ -130,15 +130,15 @@ def build_ui(
     def update_seed_control(random_seed):
         return gr.update(interactive=not bool(random_seed))
 
-    def update_task(label, audio_value, duration):
+    def update_task(label, audio_value, duration, primary="", auto_duration=False):
         task = TASK_BY_LABEL.get(label) if isinstance(label, str) else None
         if task is None:
-            return gr.skip(), gr.skip(), gr.skip(), budget_html(label, audio_value, duration)
+            return gr.skip(), gr.skip(), gr.skip(), budget_html(label, audio_value, duration, primary, auto_duration)
         return (
             gr.update(label=task.primary_label),
             gr.update(label=task.secondary_label),
             gr.update(label="参考声音" if task.key == "zero_shot_tts" else "待处理音频", visible=task.needs_audio),
-            budget_html(label, audio_value, duration),
+            budget_html(label, audio_value, duration, primary, auto_duration),
         )
 
     def preview_instruction(label, primary, secondary):
@@ -444,7 +444,7 @@ def build_ui(
                 retry_button = gr.Button("重试失败 / 取消 / 中断任务")
         task_choice.change(
             update_task,
-            [task_choice, source_audio, duration],
+            [task_choice, source_audio, duration, primary, auto_duration],
             [primary, secondary, source_audio, budget],
         )
         source_audio.change(budget_html, [task_choice, source_audio, duration, primary, auto_duration], budget)
