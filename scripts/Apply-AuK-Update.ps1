@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][string]$PackageRoot,
     [int]$ParentProcessId = 0,
     [switch]$NoRestart,

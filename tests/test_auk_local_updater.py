@@ -132,7 +132,11 @@ def test_external_applier_preserves_protected_data_and_rolls_back(tmp_path):
     }
     for path, data in protected.items():
         path.write_bytes(data)
-    new_files = {"README.md": b"new readme", "src/auk_local/version.py": b"new version"}
+    new_files = {
+        "README.md": b"new readme",
+        "src/auk_local/version.py": b"new version",
+        "环境诊断.cmd": b"@echo off\r\n",
+    }
     for name, data in new_files.items():
         path = staging.joinpath(*name.split("/"))
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,6 +169,7 @@ def test_external_applier_preserves_protected_data_and_rolls_back(tmp_path):
     )
     assert succeeded.returncode == 0, succeeded.stderr
     assert (root / "README.md").read_bytes() == b"new readme"
+    assert (root / "环境诊断.cmd").read_bytes() == b"@echo off\r\n"
     for path, data in protected.items():
         assert path.read_bytes() == data
 
@@ -191,3 +196,8 @@ def test_launcher_hands_exit_42_to_external_updater(tmp_path):
     while time.time() < deadline and not marker.exists():
         time.sleep(0.1)
     assert marker.read_text() == "started"
+
+
+def test_windows_update_script_has_utf8_bom_for_chinese_allowlist():
+    package = Path(__file__).resolve().parents[1]
+    assert (package / "scripts/Apply-AuK-Update.ps1").read_bytes().startswith(b"\xef\xbb\xbf")
