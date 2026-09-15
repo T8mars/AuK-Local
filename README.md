@@ -15,7 +15,7 @@
 💻 Try our model on the <a href="https://huggingface.co/spaces/tencent/AuK">HuggingFace Space</a> · <a href="https://modelscope.cn/studios/Tencent-Hunyuan/AuK">ModelScope Space</a>!
 </p>
 
-> **AuK Local package note:** this checkout powers the standalone light-themed local workstation. The supported ComfyUI integration is the independent [AuK · T8star-Aix native node package](https://github.com/T8mars/Comfyui-Auk-T8); it runs directly in ComfyUI and does not use this package's port 7860 service.
+> **AuK Local package note:** this checkout powers the standalone light-themed local workstation. In the complete Windows package, double-click `AuK-Local.exe`; the console remains open for service logs and the browser opens after port 7860 is ready. The supported ComfyUI integration is the independent [AuK · T8star-Aix native node package](https://github.com/T8mars/Comfyui-Auk-T8); it runs directly in ComfyUI and does not use this package's port 7860 service.
 
 ## News
 
