@@ -30,7 +30,9 @@ foreach ($name in $rootNames) {
 }
 foreach ($directory in @('src', 'scripts', 'docs')) {
     Get-ChildItem -LiteralPath (Join-Path $Root $directory) -Recurse -File | Where-Object {
-        $_.Extension -notin @('.pyc', '.pyo') -and $_.FullName -notmatch '[\\/]__pycache__[\\/]'
+        $_.Extension -notin @('.pyc', '.pyo') -and
+            $_.FullName -notmatch '[\\/]__pycache__[\\/]' -and
+            $_.FullName -notmatch '[\\/][^\\/]+\.egg-info[\\/]'
     } | ForEach-Object { $files.Add($_) }
 }
 $icon = Get-Item -LiteralPath (Join-Path $Root 'assets\AuK-Local.ico')
