@@ -27,6 +27,8 @@ models/   runtime/   ckpts/   data/   outputs/   logs/   .secrets/   .git/
 
 Start the app through `AuK-Local.exe` to use automatic restart. The BAT files remain compatibility and diagnostics entry points.
 
+If an existing 0.2.2 installation stages the update but does not restart, manually overlay the 0.2.3 code-only ZIP once. The 0.2.2 Windows launcher script can fail before handing the staged package to the external updater; the repaired flow in 0.2.3 has passed an end-to-end update and restart test.
+
 ## Included interfaces
 
 - Light Chinese Gradio workspace on `127.0.0.1:7860`
