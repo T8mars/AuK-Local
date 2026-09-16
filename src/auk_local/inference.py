@@ -13,7 +13,12 @@ from .audio import read_verified_source, validate_duration
 from .config import LocalPaths, load_model_manifest, model_paths
 from .diagnostics import model_file_issues
 from .preprocess import limit_vocal_output, prepare_model_audio
-from .task_templates import emotion_duration_multiplier, parse_speed_multiplier
+from .task_templates import (
+    content_scaled_seconds,
+    emotion_duration_multiplier,
+    nonverbal_duration_delta,
+    parse_speed_multiplier,
+)
 from .version import VERSION
 
 
@@ -105,7 +110,7 @@ class InferenceRuntime:
                 waveform, preprocessing = prepare_model_audio(
                     waveform, source_rate, str(task.get("task_key") or ""), str(task.get("primary") or ""),
                 )
-                source_seconds = waveform.shape[-1] / source_rate
+                source_seconds = float(preprocessing["speech_seconds_unpadded"])
                 audio = (waveform, source_rate)
                 qwen_waveform = waveform
                 if source_rate != 16_000:
@@ -121,7 +126,17 @@ class InferenceRuntime:
                 elif duration_mode == "emotion":
                     target_seconds = source_seconds * emotion_duration_multiplier(str(task.get("primary") or ""))
                 elif duration_mode == "content":
-                    target_seconds *= source_seconds / original_source_seconds
+                    target_seconds = content_scaled_seconds(
+                        str(task.get("task_key") or ""),
+                        str(task.get("primary") or ""),
+                        source_seconds,
+                        str(task.get("secondary") or ""),
+                    )
+                elif duration_mode == "nonverbal":
+                    target_seconds = max(
+                        0.1,
+                        source_seconds + nonverbal_duration_delta(str(task.get("primary") or "")),
+                    )
             validate_duration(source_seconds, target_seconds)
             content: list[dict[str, Any]] = [{"type": "text", "text": str(task["instruction"])}]
             if qwen_audio is not None:
@@ -141,7 +156,7 @@ class InferenceRuntime:
             )
             progress("decoding")
             generated, vocal_peak_limited = limit_vocal_output(
-                generated, str(task.get("task_key") or ""),
+                generated, str(task.get("task_key") or ""), int(sample_rate),
             )
             if (
                 not torch.is_tensor(generated)

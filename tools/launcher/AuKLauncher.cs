@@ -10,8 +10,8 @@ using System.Text;
 [assembly: AssemblyCompany("T8star-Aix")]
 [assembly: AssemblyProduct("AuK Local")]
 [assembly: AssemblyCopyright("Copyright © T8star-Aix 2026")]
-[assembly: AssemblyVersion("0.2.2.0")]
-[assembly: AssemblyFileVersion("0.2.2.0")]
+[assembly: AssemblyVersion("0.2.3.0")]
+[assembly: AssemblyFileVersion("0.2.3.0")]
 
 internal static class AuKLauncher
 {
@@ -66,11 +66,14 @@ internal static class AuKLauncher
         {
             ProcessStartInfo info = new ProcessStartInfo();
             info.FileName = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe";
-            info.Arguments = "/d /c call scripts\\Start-AuK.cmd";
+            // Do not touch ProcessStartInfo.EnvironmentVariables here. On Windows,
+            // a parent environment can contain both `Path` and `PATH`; the .NET
+            // Framework collection treats those names as the same key and throws
+            // before the child process starts. Set the launcher marker inside cmd.
+            info.Arguments = "/d /c set AUK_LAUNCHED_BY_EXE=1&& call scripts\\Start-AuK.cmd";
             info.WorkingDirectory = packageRoot;
             info.UseShellExecute = false;
             info.CreateNoWindow = false;
-            info.EnvironmentVariables["AUK_LAUNCHED_BY_EXE"] = "1";
 
             using (Process process = Process.Start(info))
             {

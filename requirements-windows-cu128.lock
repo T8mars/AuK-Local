@@ -52,6 +52,7 @@ packaging==26.3
 pandas==2.3.3
 pillow==12.3.0
 platformdirs==4.11.8
+pyloudnorm==0.2.0
 pooch==1.9.0
 psutil==7.2.2
 pycparser==3.0
@@ -72,6 +73,7 @@ safetensors==0.8.0
 scikit-learn==1.7.2
 scipy==1.15.3
 semantic-version==2.10.0
+silero-vad==6.2.1
 shellingham==1.5.4
 six==1.17.0
 soundfile==0.14.0

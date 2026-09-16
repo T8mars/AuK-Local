@@ -77,10 +77,12 @@ def test_client_disables_environment_proxies(tmp_path, monkeypatch):
     assert not any(handler.proxies for handler in proxy_handlers)
 
 
-def test_duration_budget_rejects_overflow():
-    validate_duration(12.0, 18.0)
-    with pytest.raises(ValueError, match="超过"):
-        validate_duration(12.0, 18.01)
+def test_duration_budget_checks_source_and_output_independently():
+    validate_duration(30.0, 30.0)
+    with pytest.raises(ValueError, match="输入音频 .*超过"):
+        validate_duration(30.01, 18.0)
+    with pytest.raises(ValueError, match="目标时长 .*超过"):
+        validate_duration(12.0, 30.01)
 
 
 def test_missing_models_do_not_break_diagnostics(tmp_path):

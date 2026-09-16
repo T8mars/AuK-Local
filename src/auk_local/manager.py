@@ -200,15 +200,23 @@ class TaskManager:
         task_key = str(payload.get("task_key") or "").strip()
         if task_key not in TASK_BY_KEY:
             raise ValueError(f"未知任务：{task_key}")
-        model = str(payload.get("model") or "flash").strip().lower()
+        model = str(payload.get("model") or "base").strip().lower()
         if model not in {"flash", "base"}:
             raise ValueError("model 必须是 flash 或 base")
         primary = str(payload.get("primary") or "").strip()
         secondary = str(payload.get("secondary") or "").strip()
         instruction = str(payload.get("instruction") or "").strip() or build_instruction(task_key, primary, secondary)
+        duration_mode = str(payload.get("duration_mode") or "manual").strip().lower()
+        if duration_mode not in {
+            "auto", "manual", "source", "source_auto", "speed", "emotion", "content", "nonverbal",
+        }:
+            raise ValueError(
+                "duration_mode 必须是 auto、manual、source、source_auto、speed、emotion、content 或 nonverbal"
+            )
         generation_seconds = _finite_float(payload.get("generation_seconds", 0), "generation_seconds")
-        if generation_seconds <= 0 or generation_seconds > 30:
-            raise ValueError("generation_seconds 必须在 0 到 30 秒之间")
+        automatic_edit_modes = {"source", "source_auto", "speed", "emotion", "content", "nonverbal"}
+        if generation_seconds <= 0 or (generation_seconds > 30 and duration_mode not in automatic_edit_modes):
+            raise ValueError("generation_seconds 必须在 0 到 30 秒之间；自动编辑模式会忽略旧的时长控件值")
         seed = _integer(payload.get("seed", 42), "seed")
         if seed < 0 or seed > 0x7FFFFFFFFFFFFFFF:
             raise ValueError("seed 超出范围")
@@ -225,13 +233,6 @@ class TaskManager:
             raise ValueError("AuK-Flash 固定使用 NFE=4、CFG=0、sway=-1 占位")
         cpu_offload = _boolean(payload.get("cpu_offload", True), "cpu_offload")
         keep_loaded = _boolean(payload.get("keep_loaded", False), "keep_loaded")
-        duration_mode = str(payload.get("duration_mode") or "manual").strip().lower()
-        if duration_mode not in {
-            "auto", "manual", "source", "source_auto", "speed", "emotion", "content", "nonverbal",
-        }:
-            raise ValueError(
-                "duration_mode 必须是 auto、manual、source、source_auto、speed、emotion、content 或 nonverbal"
-            )
         seed_mode = str(payload.get("seed_mode") or "fixed").strip().lower()
         if seed_mode not in {"random", "fixed"}:
             raise ValueError("seed_mode 必须是 random 或 fixed")
@@ -267,7 +268,10 @@ class TaskManager:
             raw_audio: bytes | None = None
             if source_payload:
                 decoded = decode_float_audio(source_payload)
-                validate_duration(decoded.duration_seconds, request["generation_seconds"])
+                if request["duration_mode"] not in {
+                    "source", "source_auto", "speed", "emotion", "content", "nonverbal",
+                }:
+                    validate_duration(decoded.duration_seconds, request["generation_seconds"])
                 raw_audio = decoded.samples.tobytes()
                 input_path = task_dir / "input.f32"
                 request["source_sample_rate"] = decoded.sample_rate

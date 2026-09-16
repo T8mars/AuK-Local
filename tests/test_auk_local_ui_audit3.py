@@ -252,10 +252,10 @@ def test_cleared_task_and_invalid_duration_do_not_break_preview(workspace):
         ("nonverbal", "在“欢迎回来”后增加笑声", "不应发送", "在“欢迎回来”后增加笑声。"),
         ("whisper", "转换成耳语", "不应发送", "用小声耳语的方式把这段话说出来。"),
         ("enhance", "去噪并去除房间混响", "不应发送", "请对这段语音做纯净化处理，保留所有说话人的人声，并去除其中的噪声和混响，输出与输入等长的干净人声。"),
-        ("quality", "去掉电话感", "不应发送", "请消除这段音频的电话音色，这段音频带有混响，请恢复成无混响的干声，输出自然清晰的人声。"),
-        ("speech_separate", "第一个开始说话的人", "不应发送", "这段音频中只保留第一个开始说话的人对应的语音，去掉其余说话人。"),
+        ("quality", "去掉电话感", "不应发送", "This audio suffers from limited bandwidth. Please restore it to a wideband, clear-sounding speech."),
+        ("speech_separate", "第一个开始说话的人", "不应发送", "Keep only the first speaker"),
         ("music_separate", "只保留歌声，去掉说话和伴奏", "不应发送", "请只保留歌声，其余声音都去掉。"),
-        ("target_speaker", "欢迎大家来到今天的节目", "不应发送", "请只保留说'欢迎大家来到今天的节目'的人，去掉其他说话人，输出等长纯净人声。"),
+        ("target_speaker", "欢迎大家来到今天的节目", "不应发送", "Keep only the speaker who says “欢迎大家来到今天的节目”"),
     ],
 )
 def test_each_task_builds_an_official_model_instruction(task_key, primary, secondary, expected):
@@ -283,6 +283,19 @@ def test_replacement_requests_are_normalized_to_official_templates(task_key, raw
     assert build_instruction(task_key, raw, "整段原文不应发送") == expected
 
 
+def test_nonverbal_quality_and_replacement_inputs_are_strictly_canonicalized():
+    assert build_instruction("nonverbal", "在开头增加笑声") == "在语音开头增加笑声。"
+    assert build_instruction("nonverbal", "删除全部呼吸") == "删除音频中所有的呼吸声。"
+    with pytest.raises(ValueError, match="未识别非语言声音"):
+        build_instruction("nonverbal", "在开头增加火车声")
+    assert build_instruction("quality", "去掉电话感") == (
+        "This audio suffers from limited bandwidth. Please restore it to a wideband, clear-sounding speech."
+    )
+    assert build_instruction("content_edit", "Replace 'old words' with 'new words'.") == (
+        "Replace 'old words' with 'new words'."
+    )
+
+
 def test_content_edit_supports_all_official_operation_shapes():
     assert build_instruction("content_edit", "在“你好”后面加上“呀”") == "在‘你好’后面加上‘呀’"
     assert build_instruction("content_edit", "删掉“那个”") == "删掉‘那个’"
@@ -298,6 +311,14 @@ def test_official_content_and_nonverbal_duration_rules():
     assert content_scaled_seconds("lyric_edit", "把歌词“今天”改成“明天上午”", 10.0) == pytest.approx(20.0)
     assert nonverbal_duration_delta("在开头增加呼吸声") == pytest.approx(0.35)
     assert nonverbal_duration_delta("删除所有笑声") == pytest.approx(-1.05)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("sad", "Say this in a sad tone"), ("fearful", "Say this in a afraid tone")],
+)
+def test_english_emotion_uses_official_demo_wording(value, expected):
+    assert build_instruction("emotion", value) == expected
 
 
 def test_reference_transcript_is_not_sent_as_clone_instruction(workspace):
@@ -460,5 +481,5 @@ def test_explicit_trim_changes_the_audio_value_used_for_budget(workspace):
     )
     assert clipped[1].shape[0] == 44_100 * 4
     assert duration_update["value"] == pytest.approx(4.0)
-    assert "输入 4.00s + 输出 4.00s" in budget
+    assert "输入 4.00s · 输出 4.00s" in budget
     assert "实际提交输入：4.00 秒" in info

@@ -47,11 +47,13 @@ The native ComfyUI package is maintained in [Comfyui-Auk-T8](https://github.com/
 
 Selecting a task updates the on-page guide with its audio requirement, allowed values, official input shape, example, and task-specific warning. Speech content edits and lyric edits accept one edit per run. Reference voice cloning accepts only the new target text alongside a clean reference recording; a reference transcript or voice description is not sent to the model.
 
+Lyric editing requires a clean isolated solo vocal (a cappella), without accompaniment. Editing tasks use the bundled Silero VAD and the unpadded speech interval for duration, then add 0.1 seconds only around the model input. Whisper conversion uses the official -44.47 LUFS target; lyric and vocal extraction outputs use the official -14 LUFS downward limiter and 0.95 peak ceiling. Metadata records the actual VAD and loudness path.
+
 Pitch, volume, timbre, de-accent, whisper, enhancement, quality repair, and separation match the actual submitted audio. Emotion follows AuK's official duration coefficients: 1.22× for sad, 1.16× for fearful, and 1.06× for the other supported emotions. Speech and lyric edits estimate their duration from the text added or removed. Nonverbal edits add or remove the official event duration.
 
 Speed editing always locks the duration control and calculates the target as `source duration / speed multiplier`. A manual target is never used for this task, because extra output time can make the model fill the tail with damaged audio.
 
-Selecting a range in the browser audio waveform does not replace the source file. Enter the trim start and end, then click **Apply trim**. The page displays the current actual input duration and uses only that material for the 30-second budget and submission. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
+Selecting a range in the browser audio waveform does not replace the source file. Enter the trim start and end, then click **Apply trim**. The page displays the current actual input duration and uses only that material for submission. Source/reference input and generated output are each limited to 30 seconds independently; they are not added together, so a 30-second input may produce a 30-second output. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
 
 ## Release contents
 
@@ -68,7 +70,7 @@ The archive build fails if it finds models, runtime files, checkpoints, user dat
 - YouTube: [@T8star-Aix](https://www.youtube.com/@T8star-Aix/)
 - Online AI apps: [RunningHub](https://www.runninghub.ai/zh-cn/user-center/1907375370302308353/userPost?inviteCode=rh-v1121)
 - API: [Seedance API](https://api.seedance.nz/sign-up?aff=5f4w)
-- Complete ComfyUI package: [Quark Drive](https://pan.quark.cn/s/264edb7e36bd)
+- Complete AuK Local package: [Quark Drive](https://pan.quark.cn/s/264edb7e36bd)
 - Hugging Face: [t8star](https://huggingface.co/t8star)
 
 ## Credits and license

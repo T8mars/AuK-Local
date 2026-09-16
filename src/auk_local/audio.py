@@ -122,8 +122,10 @@ def validate_duration(source_seconds: float, target_seconds: float, max_seconds:
         raise ValueError("目标时长必须大于 0 秒")
     if source_seconds < 0 or not math.isfinite(source_seconds):
         raise ValueError("输入音频时长无效")
-    if source_seconds + target_seconds > max_seconds + 1e-9:
-        raise ValueError(
-            f"输入 {source_seconds:.2f}s + 输出 {target_seconds:.2f}s = "
-            f"{source_seconds + target_seconds:.2f}s，超过 {max_seconds:.0f}s 限制"
-        )
+    # Source conditioning and generated output are separate sequences.  AuK's
+    # own speaker-separation demos use a 19.23 s source with an 18.24/19.28 s
+    # output, so adding both durations would incorrectly reject official use.
+    if source_seconds > max_seconds + 1e-9:
+        raise ValueError(f"输入音频 {source_seconds:.2f}s，超过 {max_seconds:.0f}s 限制")
+    if target_seconds > max_seconds + 1e-9:
+        raise ValueError(f"目标时长 {target_seconds:.2f}s，超过 {max_seconds:.0f}s 限制")

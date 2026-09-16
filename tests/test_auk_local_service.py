@@ -3,11 +3,14 @@ from __future__ import annotations
 import uuid
 import sqlite3
 
+import numpy as np
+
 import pytest
 from fastapi.testclient import TestClient
 
 from auk_local.config import LocalPaths
 from auk_local.manager import TaskManager
+from auk_local.audio import encode_float_audio
 from auk_local.service import create_app, load_or_create_token
 
 
@@ -19,6 +22,60 @@ def test_health_works_without_models_or_worker(tmp_path):
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert not response.json()["inference_ready"]
+
+
+def test_local_api_defaults_to_high_quality_base_model(tmp_path):
+    manager = TaskManager(LocalPaths.from_root(tmp_path), start_worker=False)
+    try:
+        normalized = manager.normalize_request(
+            {
+                "request_id": str(uuid.uuid4()),
+                "task_key": "instruct_tts",
+                "primary": "测试",
+                "secondary": "自然清晰的女声",
+                "generation_seconds": 1.0,
+            }
+        )
+        assert normalized["model"] == "base"
+    finally:
+        manager.close()
+
+
+def test_automatic_edit_accepts_and_ignores_stale_48_second_widget_after_crop(tmp_path):
+    manager = TaskManager(LocalPaths.from_root(tmp_path), start_worker=False)
+    try:
+        record, created = manager.submit(
+            {
+                "request_id": str(uuid.uuid4()),
+                "task_key": "deaccent",
+                "primary": "去掉方言口音",
+                "generation_seconds": 48.0,
+                "duration_mode": "source_auto",
+                "audio": encode_float_audio(np.zeros(24_000 * 4, dtype=np.float32), 24_000),
+            }
+        )
+        assert created is True
+        assert record.request["source_frames"] == 24_000 * 4
+        assert record.request["generation_seconds"] == 48.0
+    finally:
+        manager.close()
+
+
+def test_manual_task_still_rejects_out_of_range_duration(tmp_path):
+    manager = TaskManager(LocalPaths.from_root(tmp_path), start_worker=False)
+    try:
+        with pytest.raises(ValueError, match="0 到 30"):
+            manager.normalize_request(
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "task_key": "zero_shot_tts",
+                    "primary": "测试",
+                    "generation_seconds": 48.0,
+                    "duration_mode": "manual",
+                }
+            )
+    finally:
+        manager.close()
 
 
 def test_authenticated_submit_and_cancel(tmp_path):

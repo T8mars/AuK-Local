@@ -243,9 +243,7 @@ def build_ui(
             if task.needs_audio and bool(source_duration) and audio_value is None:
                 return "<div class='auk-budget'>按原音频时长：请先上传音频。</div>"
             return "<div class='auk-budget'>输入数据无效，请检查音频和目标时长。</div>"
-        total = source_seconds + target_seconds
-        remaining = max(0.0, 30.0 - total)
-        state = "可提交" if total <= 30.0 + 1e-9 else "已超出限制"
+        state = "可提交" if source_seconds <= 30.0 + 1e-9 and target_seconds <= 30.0 + 1e-9 else "已超出限制"
         mode = {
             "auto": "自动估算 TTS",
             "source": "按原音频时长",
@@ -257,9 +255,8 @@ def build_ui(
             "manual": "手动设置",
         }[duration_mode]
         return (
-            f"<div class='auk-budget'>{mode} · 30 秒预算："
-            f"输入 {source_seconds:.2f}s + 输出 {target_seconds:.2f}s = {total:.2f}s"
-            f" · 剩余 {remaining:.2f}s · {state}</div>"
+            f"<div class='auk-budget'>{mode} · 单项 30 秒限制："
+            f"输入 {source_seconds:.2f}s · 输出 {target_seconds:.2f}s · {state}</div>"
         )
 
     def update_duration_control(

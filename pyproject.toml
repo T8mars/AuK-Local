@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auk"
-version = "0.2.2"
+version = "0.2.3"
 description = "AuK: An Open-Source Foundational Model for Speech Generation and Editing"
 readme = "README.md"
 license = { text = "MIT License" }
@@ -44,6 +44,8 @@ local = [
     "psutil>=6,<8",
     "python-multipart>=0.0.20,<1",
     "soundfile>=0.13,<1",
+    "silero-vad>=6,<7",
+    "pyloudnorm>=0.2,<1",
     "uvicorn>=0.34,<1",
 ]
 
@@ -83,9 +85,11 @@ include = ["auk*"]
 "auk.infer" = ["pe.config.yaml"]
 "auk.model.vae.modules.commons" = ["assets/*.npz"]
 "auk_local" = ["model-manifest.json", "update-public-key.xml"]
+"auk_local._vendor.silero_vad" = ["data/*", "LICENSE"]
+"auk_local._vendor.pyloudnorm" = ["LICENSE"]
 
 [tool.ruff]
-extend-exclude = ["src/auk/model/vae/"]
+extend-exclude = ["src/auk/model/vae/", "src/auk_local/_vendor/"]
 line-length = 130
 target-version = "py310"
 
