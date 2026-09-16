@@ -83,7 +83,7 @@ $payload = [ordered]@{
     channel = 'stable'
     version = $Version
     published_at = [DateTimeOffset]::UtcNow.ToString('o')
-    notes = 'Limits source and generated audio independently to 30 seconds; fixes launcher and update handoff reliability, applied trimming, stale duration validation, task preprocessing, official prompts, and quality repair.'
+    notes = 'Makes waveform scissors, explicit trimming, clearing, and replacing audio update the actual submitted clip; prevents over-limit automatic duration estimates from breaking Gradio components.'
     compatibility = [ordered]@{ service_protocol = '1.0' }
     package = [ordered]@{
         name = $ArchiveName

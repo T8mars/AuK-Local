@@ -55,7 +55,7 @@ Pitch, volume, timbre, de-accent, whisper, enhancement, quality repair, and sepa
 
 Speed editing always locks the duration control and calculates the target as `source duration / speed multiplier`. A manual target is never used for this task, because extra output time can make the model fill the tail with damaged audio.
 
-Selecting a range in the browser audio waveform does not replace the source file. Enter the trim start and end, then click **Apply trim**. The page displays the current actual input duration and uses only that material for submission. Source/reference input and generated output are each limited to 30 seconds independently; they are not added together, so a 30-second input may produce a 30-second output. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
+The browser supports two applied trimming paths. For waveform trimming, drag a range, click the scissors, and then click the **Trim** confirmation shown by the player. Alternatively, enter the trim start and end and click **Apply trim**. Both paths replace the current input, immediately update the displayed submitted duration, and allow the audio to be cleared or replaced afterwards. Source/reference input and generated output are each limited to 30 seconds independently; they are not added together, so a 30-second input may produce a 30-second output. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
 
 ## Release contents
 

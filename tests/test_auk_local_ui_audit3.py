@@ -483,3 +483,44 @@ def test_explicit_trim_changes_the_audio_value_used_for_budget(workspace):
     assert duration_update["value"] == pytest.approx(4.0)
     assert "输入 4.00s · 输出 4.00s" in budget
     assert "实际提交输入：4.00 秒" in info
+
+
+def test_waveform_scissors_use_change_event_and_reset_explicit_trim(workspace):
+    _, demo, _ = workspace
+    config = demo.get_config_file()
+    audio_id = next(
+        component["id"]
+        for component in config["components"]
+        if component.get("props", {}).get("label") == "待处理音频"
+    )
+    dependencies = [
+        dependency
+        for dependency in config["dependencies"]
+        if any(target == (audio_id, "change") or target == [audio_id, "change"] for target in dependency["targets"])
+    ]
+    assert len(dependencies) == 1
+    assert dependencies[0]["api_name"].startswith("refresh_source_audio")
+    assert len(dependencies[0]["outputs"]) == 5
+    assert not any(
+        any(target == (audio_id, "input") or target == [audio_id, "input"] for target in dependency["targets"])
+        for dependency in config["dependencies"]
+    )
+
+
+def test_automatic_duration_over_30_does_not_break_slider_outputs(workspace):
+    import numpy as np
+
+    _, _, functions = workspace
+    audio = (24_000, np.zeros(24_000 * 24, dtype=np.float32))
+    duration_update, budget = functions["update_duration_control"](
+        "语音文字编辑",
+        f"把“瓜”改成“{'T8' * 100}”",
+        3.0,
+        False,
+        False,
+        audio,
+        "",
+    )
+    assert duration_update["value"] == 30.0
+    assert duration_update["interactive"] is False
+    assert "已超出限制" in budget

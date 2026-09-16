@@ -10,8 +10,8 @@ using System.Text;
 [assembly: AssemblyCompany("T8star-Aix")]
 [assembly: AssemblyProduct("AuK Local")]
 [assembly: AssemblyCopyright("Copyright © T8star-Aix 2026")]
-[assembly: AssemblyVersion("0.2.3.0")]
-[assembly: AssemblyFileVersion("0.2.3.0")]
+[assembly: AssemblyVersion("0.2.4.0")]
+[assembly: AssemblyFileVersion("0.2.4.0")]
 
 internal static class AuKLauncher
 {

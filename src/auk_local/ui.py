@@ -152,7 +152,7 @@ def build_ui(
         if audio_value is None:
             return (
                 "<div class='auk-budget'>尚未上传音频。波形中拖选只是在选择；"
-                "请点击右下角剪刀，或使用下面的明确截取按钮，实际时长才会改变。</div>"
+                "请点击右下角剪刀，再点 Trim（确认），或使用下面的明确截取按钮，实际时长才会改变。</div>"
             )
         try:
             seconds = source_audio_seconds(audio_value)
@@ -160,7 +160,7 @@ def build_ui(
             return "<div class='auk-budget'>音频数据无效，请重新上传。</div>"
         return (
             f"<div class='auk-budget'><strong>实际提交输入：{seconds:.2f} 秒</strong>。"
-            "这个数值才是模型收到的长度；波形选区必须点击剪刀后才生效。</div>"
+            "这个数值才是模型收到的长度；波形选区必须点击剪刀并再点 Trim（确认）后才生效。</div>"
         )
 
     def apply_source_trim(
@@ -278,11 +278,32 @@ def build_ui(
             target_seconds, duration_mode = effective_ui_duration(
                 label, primary, duration, auto_duration, source_duration, audio_value, secondary,
             )
-            update = gr.update(value=target_seconds, interactive=duration_mode == "manual")
+            # Automatic strategies may legitimately estimate a value outside the
+            # slider's display range.  Keep the real estimate in budget_html() and
+            # recompute it again at submission time, but never feed an invalid
+            # value to Gradio's 0.2–30 second slider: Gradio rejects the whole
+            # event and marks every output component as an error.
+            display_seconds = min(30.0, max(0.2, target_seconds))
+            update = gr.update(value=display_seconds, interactive=duration_mode == "manual")
         except (TypeError, ValueError, OverflowError):
             update = gr.update(interactive=not locked)
         return update, budget_html(
             label, audio_value, duration, primary, auto_duration, source_duration, secondary,
+        )
+
+    def refresh_source_audio(
+        label, primary, duration, auto_duration, source_duration, audio_value, secondary="",
+    ):
+        """Synchronize server state after upload, clear, recording, or waveform trimming."""
+        duration_update, budget_update = update_duration_control(
+            label, primary, duration, auto_duration, source_duration, audio_value, secondary,
+        )
+        return (
+            duration_update,
+            budget_update,
+            source_audio_info_html(audio_value),
+            gr.update(value=0.0),
+            gr.update(value=0.0),
         )
 
     def choose_auto_duration(label, primary, duration, auto_duration, source_duration, audio_value, secondary=""):
@@ -704,15 +725,13 @@ def build_ui(
             [task_choice, source_audio, duration, primary, auto_duration, source_duration, secondary],
             [primary, secondary, source_audio, auto_duration, source_duration, duration, budget, task_guide],
         )
-        source_audio.input(
-            lambda label, primary_text, duration_value, auto_value, source_value, audio, secondary_text: (
-                *update_duration_control(
-                    label, primary_text, duration_value, auto_value, source_value, audio, secondary_text,
-                ),
-                source_audio_info_html(audio),
-            ),
+        # Gradio's built-in waveform scissors emit `change`, not `input`.
+        # Listening to change also keeps clear, replace, upload, microphone and
+        # programmatic explicit trims synchronized with the value sent to AuK.
+        source_audio.change(
+            refresh_source_audio,
             [task_choice, primary, duration, auto_duration, source_duration, source_audio, secondary],
-            [duration, budget, source_audio_info],
+            [duration, budget, source_audio_info, trim_start, trim_end],
             queue=False,
         )
         trim_button.click(
