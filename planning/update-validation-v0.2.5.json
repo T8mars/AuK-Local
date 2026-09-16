@@ -1,0 +1,10 @@
+{
+  "old_version": "0.2.4",
+  "new_version": "0.2.5",
+  "signature_verified_by": "v0.2.4 launcher",
+  "validation_root": "E:\\auk\\AuK-Local\\data\\release-validation-v0.2.5-f1826f1a",
+  "staged": true,
+  "isolated_install_verified_files": 93,
+  "protected_sentinels_preserved": true,
+  "startup": "running local service separately verified at 0.2.5"
+}
