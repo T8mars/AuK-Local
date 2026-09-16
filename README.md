@@ -6,6 +6,10 @@ AuK Local is a standalone, light-themed Windows workstation for speech generatio
 
 ## Start
 
+Download the **complete Windows package (models and Python included)** from [Hugging Face — AuK-Local.rar](https://huggingface.co/t8star/Auk-Comfy/resolve/main/AuK-Local.rar?download=true). This overseas mirror is 20.37 GB (18.97 GiB). Fully extract the archive, then double-click `AuK-Local.exe` inside the `AuK-Local` folder. If your download is interrupted, resume it with a download manager.
+
+SHA-256: `a99966c3eb7336ca9d027c0ea491edaddcfa3582b2eb436444a36cfc2f2e9061`
+
 Use a complete AuK Local folder and double-click `AuK-Local.exe`. The launcher uses the Python, CUDA helpers, FFmpeg, and models inside that folder. It opens `http://127.0.0.1:7860` after the local service is ready and keeps the console visible for logs.
 
 The GitHub Release ZIP is a **code-only update package**. It intentionally excludes model weights and the Python runtime, so it must be copied over an existing complete package. The complete package is distributed separately by the maintainer.
@@ -78,7 +82,7 @@ The archive build fails if it finds models, runtime files, checkpoints, user dat
 - YouTube: [@T8star-Aix](https://www.youtube.com/@T8star-Aix/)
 - Online AI apps: [RunningHub](https://www.runninghub.ai/zh-cn/user-center/1907375370302308353/userPost?inviteCode=rh-v1121)
 - API: [Seedance API](https://api.seedance.nz/sign-up?aff=5f4w)
-- Complete AuK Local package: [Quark Drive](https://pan.quark.cn/s/264edb7e36bd)
+- Complete AuK Local package: [Hugging Face / overseas download](https://huggingface.co/t8star/Auk-Comfy/resolve/main/AuK-Local.rar?download=true) · [Quark Drive](https://pan.quark.cn/s/264edb7e36bd)
 - Hugging Face: [t8star](https://huggingface.co/t8star)
 
 ## Credits and license

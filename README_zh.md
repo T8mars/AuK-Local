@@ -4,7 +4,11 @@ AuK Local 是由 T8star-Aix 维护的独立 Windows 浅色中文工作台，支�
 
 ## 下载与启动
 
-GitHub Release 提供的是**不含模型、不含 Python 的程序更新包**。它适合覆盖到已有完整版中，不能单独完成推理。完整版由作者另行提供。
+**完整版下载（包含模型和 Python）：[Hugging Face 海外直链 — AuK-Local.rar](https://huggingface.co/t8star/Auk-Comfy/resolve/main/AuK-Local.rar?download=true)**，大小 20.37 GB（18.97 GiB）。下载中断时可使用支持断点续传的下载工具继续。完整解压后，双击 `AuK-Local` 文件夹中的 `AuK-Local.exe`。
+
+SHA-256：`a99966c3eb7336ca9d027c0ea491edaddcfa3582b2eb436444a36cfc2f2e9061`
+
+GitHub Release 提供的是**不含模型、不含 Python 的程序更新包**。它适合覆盖到已有完整版中，不能单独完成推理。
 
 1. 完整解压 AuK Local，保留原有目录结构。
 2. 双击根目录的 `AuK-Local.exe`。
@@ -65,6 +69,7 @@ GitHub Release 提供的是**不含模型、不含 Python 的程序更新包**�
 - 程序源码与 Release：[T8mars/AuK-Local](https://github.com/T8mars/AuK-Local)
 - 独立 ComfyUI 原生节点：[Comfyui-Auk-T8](https://github.com/T8mars/Comfyui-Auk-T8)
 - 模型：[t8star/Auk-Comfy](https://huggingface.co/t8star/Auk-Comfy)
+- AuK Local 完整版：[Hugging Face 海外下载](https://huggingface.co/t8star/Auk-Comfy/resolve/main/AuK-Local.rar?download=true)
 - B站：[T8star-Aix](https://space.bilibili.com/385085361)
 - YouTube：[@T8star-Aix](https://www.youtube.com/@T8star-Aix/)
 - 在线 AI 应用：[RunningHub](https://www.runninghub.ai/zh-cn/user-center/1907375370302308353/userPost?inviteCode=rh-v1121)
