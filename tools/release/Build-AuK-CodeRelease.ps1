@@ -83,7 +83,7 @@ $payload = [ordered]@{
     channel = 'stable'
     version = $Version
     published_at = [DateTimeOffset]::UtcNow.ToString('o')
-    notes = 'Makes waveform scissors, explicit trimming, clearing, and replacing audio update the actual submitted clip; prevents over-limit automatic duration estimates from breaking Gradio components.'
+    notes = 'Keeps models resident by default with release controls, expands playable history and prompts, and adds SHA-256 verified local WAV saving to Downloads plus an output-folder shortcut.'
     compatibility = [ordered]@{ service_protocol = '1.0' }
     package = [ordered]@{
         name = $ArchiveName

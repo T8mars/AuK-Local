@@ -232,7 +232,7 @@ class TaskManager:
         if model == "flash" and (nfe != 4 or cfg != 0.0 or sway != -1.0):
             raise ValueError("AuK-Flash 固定使用 NFE=4、CFG=0、sway=-1 占位")
         cpu_offload = _boolean(payload.get("cpu_offload", True), "cpu_offload")
-        keep_loaded = _boolean(payload.get("keep_loaded", False), "keep_loaded")
+        keep_loaded = _boolean(payload.get("keep_loaded", True), "keep_loaded")
         seed_mode = str(payload.get("seed_mode") or "fixed").strip().lower()
         if seed_mode not in {"random", "fixed"}:
             raise ValueError("seed_mode 必须是 random 或 fixed")
@@ -308,6 +308,11 @@ class TaskManager:
 
     def get(self, request_id: str) -> TaskRecord:
         return self.store.get(request_id)
+
+    def unload_models(self) -> bool:
+        if self.supervisor is None:
+            return False
+        return self.supervisor.unload()
 
     def cancel(self, request_id: str) -> str:
         state = self._storage_call("取消任务", lambda: self.store.cancel(request_id))

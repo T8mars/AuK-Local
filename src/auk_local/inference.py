@@ -88,14 +88,17 @@ class InferenceRuntime:
         cpu_offload = bool(task.get("cpu_offload", True))
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
-        keep_loaded = bool(task.get("keep_loaded", False))
+        keep_loaded = bool(task.get("keep_loaded", True))
         engine = None
         result_path = None
         metadata_path = None
         succeeded = False
         try:
             raw_source = read_verified_source(Path(input_path), task) if input_path else None
+            model_reused = self.engine is not None and self.loaded_key == f"{model_key}:{int(cpu_offload)}"
+            load_started = time.perf_counter()
             engine = self._load(model_key, cpu_offload, progress)
+            model_load_seconds = time.perf_counter() - load_started
             audio = None
             source_seconds = 0.0
             original_source_seconds = 0.0
@@ -215,6 +218,9 @@ class InferenceRuntime:
                 "sway_sampling_coef": None if model_key == "flash" else float(task.get("sway_sampling_coef", -1.0)),
                 "dtype": "bf16_autocast",
                 "cpu_offload": cpu_offload,
+                "keep_loaded": keep_loaded,
+                "model_reused": model_reused,
+                "model_load_seconds": round(model_load_seconds, 3),
                 "elapsed_seconds": round(time.time() - started, 3),
                 "peak_vram_bytes": peak_vram,
             }

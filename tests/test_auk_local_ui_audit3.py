@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import threading
 import wave
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from auk_local.audio import encode_float_audio
 from auk_local.config import LocalPaths
 from auk_local.manager import TaskManager
 from auk_local.task_templates import (
@@ -161,7 +164,7 @@ def test_gradio_completion_packet_does_not_replay_superseded_status_or_clear_aud
 
     async def exercise():
         running = await call("run_task", [
-            "描述生成语音", "test", "", None, 1, "AuK-Flash（极速）", "42", True, False, None, None,
+            "描述生成语音", "test", "", None, 1, "AuK-Flash（极速）", "42", True, "release", None, None,
             True, True, False,
         ])
         assert running["is_generating"]
@@ -483,6 +486,118 @@ def test_explicit_trim_changes_the_audio_value_used_for_budget(workspace):
     assert duration_update["value"] == pytest.approx(4.0)
     assert "输入 4.00s · 输出 4.00s" in budget
     assert "实际提交输入：4.00 秒" in info
+
+
+def test_source_audio_help_explains_native_restore_button(workspace):
+    import numpy as np
+
+    _, _, functions = workspace
+    info = functions["refresh_source_audio"](
+        "去口音", "去掉方言口音", 1.0, False, False,
+        (24_000, np.zeros(24_000, dtype=np.float32)), "",
+    )[2]
+    assert "↶ 可恢复最初上传音频" in info
+
+
+def test_model_residency_defaults_to_keep_and_maps_radio_values(workspace):
+    manager, demo, functions = workspace
+    config = demo.get_config_file()
+    residence = next(
+        component["props"]
+        for component in config["components"]
+        if component.get("props", {}).get("label") == "模型驻留策略"
+    )
+    assert residence["value"] == "keep"
+
+    for choice, expected in (("keep", True), ("release", False)):
+        updates = functions["run_task"](
+            "描述生成语音", "模型常驻测试", "", None, 1.0,
+            "AuK-Flash（推荐）", "42", True, choice, None, {"owner": None},
+            False, False, False,
+        )
+        request_id = next(updates)[4]
+        assert manager.get(request_id).request["keep_loaded"] is expected
+        manager.cancel(request_id)
+        list(updates)
+
+
+def test_history_detail_restores_result_input_prompts_and_instruction(workspace):
+    import json
+    import numpy as np
+
+    manager, _, functions = workspace
+    samples = np.linspace(-0.25, 0.25, 8_000, dtype=np.float32)
+    record, _ = manager.submit({
+        "task_key": "zero_shot_tts",
+        "primary": "历史目标文字",
+        "secondary": "历史参考音频文字",
+        "generation_seconds": 1.0,
+        "audio": encode_float_audio(samples, 8_000),
+    })
+    manager.store.claim_next()
+    directory = manager.paths.outputs / record.request_id
+    directory.mkdir()
+    result = directory / "result.wav"
+    metadata = directory / "metadata.json"
+    with wave.open(str(result), "wb") as stream:
+        stream.setparams((1, 2, 8_000, 0, "NONE", "not compressed"))
+        stream.writeframes(b"\0" * 16_000)
+    metadata.write_text('{"seed":42}', encoding="utf-8")
+    manager.store.complete(record.request_id, str(result), str(metadata))
+
+    detail = functions["history_detail"](record.request_id)
+    assert detail[0] == record.request_id
+    assert "成功" in detail[1] and "参考/源音频可播放" in detail[1]
+    assert detail[2] == str(result)
+    assert detail[3][0] == 8_000
+    np.testing.assert_allclose(detail[3][1], samples)
+    assert detail[4]["value"] == "历史目标文字"
+    assert detail[5]["value"] == "历史参考音频文字"
+    assert detail[6] == manager.get(record.request_id).request["instruction"]
+    payload = json.loads(detail[7])
+    assert payload["metadata"]["seed"] == 42
+    assert payload["input_available"] is True
+
+    row = functions["recent_rows"]()[0]
+    selected = functions["select_history"](SimpleNamespace(row_value=tuple(row)))
+    assert selected[0] == record.request_id
+
+
+def test_history_selection_is_injected_by_actual_gradio_process_api(workspace):
+    from gradio.events import EventData
+
+    manager, demo, functions = workspace
+    history_id = create_history(manager)
+    row = functions["recent_rows"]()[0]
+    entry = next(entry for entry in demo.fns.values() if entry.fn and entry.fn.__name__ == "select_history")
+    assert entry.collects_event_data
+    event = EventData(None, {"index": [0, 0], "value": row[0], "row_value": row, "selected": True})
+    response = asyncio.run(demo.process_api(entry, [], event_data=event))
+    assert response["data"][0] == history_id
+    assert response["data"][2]["path"]
+    assert response["data"][4]["value"] == "history"
+
+
+def test_history_result_saves_from_original_output(workspace, tmp_path, monkeypatch):
+    manager, _, functions = workspace
+    history_id = create_history(manager)
+    destination = tmp_path / "downloads"
+    monkeypatch.setattr("auk_local.result_files.downloads_directory", lambda: destination)
+    assert "请先" in functions["save_selected_result"]("")
+    assert "SHA-256" in functions["save_selected_result"](history_id)
+    saved = next(destination.glob("*.wav"))
+    assert saved.read_bytes() == Path(manager.get(history_id).result_path).read_bytes()
+
+
+def test_damaged_history_result_does_not_break_detail_event(workspace):
+    manager, demo, _ = workspace
+    history_id = create_history(manager)
+    Path(manager.get(history_id).result_path).write_bytes(b"broken wav")
+    entry = next(entry for entry in demo.fns.values() if entry.fn and entry.fn.__name__ == "history_detail")
+    response = asyncio.run(demo.process_api(entry, [history_id]))
+    assert response["data"][2] is None
+    assert "生成结果损坏" in response["data"][1]
+    assert response["data"][4]["value"] == "history"
 
 
 def test_waveform_scissors_use_change_event_and_reset_explicit_trim(workspace):

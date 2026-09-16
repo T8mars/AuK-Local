@@ -260,6 +260,21 @@ class LifecycleTests(unittest.TestCase):
         supervisor._restart_worker.assert_called_once()
         self.assertEqual(self.manager.scheduler_health["pending_request_id"], record.request_id)
 
+    def test_manual_unload_sends_worker_command(self):
+        supervisor = self.make_supervisor()
+        supervisor._output.put({"type": "unloaded"})
+        self.assertTrue(supervisor.unload(timeout=0.1))
+        supervisor._input.put.assert_called_once_with({"type": "unload"})
+
+    def test_manual_unload_rejects_busy_worker(self):
+        supervisor = self.make_supervisor()
+        supervisor._run_lock.acquire()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "任务正在运行"):
+                supervisor.unload(timeout=0.1)
+        finally:
+            supervisor._run_lock.release()
+
     @unittest.skipUnless(os.name == "nt", "Windows process handle verification")
     def test_watchdog_exits_real_child_after_parent_abrupt_exit(self):
         import ctypes

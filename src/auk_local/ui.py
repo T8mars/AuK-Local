@@ -10,9 +10,10 @@ import time
 import uuid
 from pathlib import Path
 
-from .audio import encode_gradio_audio
+from .audio import encode_gradio_audio, read_verified_source
 from .duration import TTS_TASK_KEYS, estimate_tts_seconds
 from .manager import TaskManager
+from .result_files import open_outputs_directory, save_result_copy
 from .task_templates import (
     TASK_BY_KEY,
     TASK_BY_LABEL,
@@ -160,7 +161,8 @@ def build_ui(
             return "<div class='auk-budget'>音频数据无效，请重新上传。</div>"
         return (
             f"<div class='auk-budget'><strong>实际提交输入：{seconds:.2f} 秒</strong>。"
-            "这个数值才是模型收到的长度；波形选区必须点击剪刀并再点 Trim（确认）后才生效。</div>"
+            "这个数值才是模型收到的长度；波形选区必须点击剪刀并再点 Trim（确认）后才生效；"
+            "点击剪刀左侧的 ↶ 可恢复最初上传音频。</div>"
         )
 
     def apply_source_trim(
@@ -403,7 +405,7 @@ def build_ui(
         }
         rows = []
         try:
-            records = manager.store.list_recent(20)
+            records = manager.store.list_recent(50)
         except (sqlite3.Error, OSError):
             return []
         for record in records:
@@ -413,13 +415,156 @@ def build_ui(
                     time.strftime("%m-%d %H:%M:%S", time.localtime(record.created_at)),
                     record.request_id,
                     task.label if task else record.request.get("task_key", ""),
+                    str(record.request.get("primary") or "")[:60],
                     record.request.get("model", ""),
                     record.request.get("seed", ""),
+                    "可播放" if record.input_path and Path(record.input_path).is_file() else (
+                        "已丢失" if record.input_path else "无"
+                    ),
                     state_labels.get(record.state, record.state),
                     record.error or "",
                 ]
             )
         return rows
+
+    def history_detail(request_id):
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return (
+                "", "请点击历史记录中的任意一行。", None, None,
+                gr.update(value="", label="当时填写 · 主要内容"),
+                gr.update(value="", label="当时填写 · 附加内容", visible=False),
+                "", "",
+            )
+        try:
+            record = manager.get(request_id)
+        except (KeyError, sqlite3.Error, OSError) as exc:
+            return (
+                request_id, f"读取历史任务失败：{exc}", None, None,
+                gr.update(value="", label="当时填写 · 主要内容"),
+                gr.update(value="", label="当时填写 · 附加内容", visible=False),
+                "", "",
+            )
+
+        task = TASK_BY_KEY.get(str(record.request.get("task_key") or ""))
+        state_labels = {
+            "queued": "排队中", "loading": "加载中", "encoding": "编码中", "sampling": "采样中",
+            "decoding": "解码中", "saving": "保存中", "succeeded": "成功", "failed": "失败",
+            "cancelled": "已取消", "interrupted": "已中断", "cancelling": "取消中",
+        }
+        result_value = record.result_path if record.result_path and Path(record.result_path).is_file() else None
+        result_note = "生成结果尚不可用或已丢失"
+        if result_value:
+            try:
+                import soundfile as sf
+
+                result_info = sf.info(result_value)
+                if result_info.frames <= 0 or result_info.samplerate <= 0:
+                    raise ValueError("生成结果为空")
+                result_note = "生成结果可播放"
+            except (OSError, RuntimeError, ValueError):
+                result_value = None
+                result_note = "生成结果损坏，无法播放"
+        input_value = None
+        input_note = "该任务不需要参考/源音频"
+        if record.input_path:
+            input_note = "参考/源音频已丢失或损坏"
+            try:
+                import numpy as np
+
+                raw = read_verified_source(Path(record.input_path), record.request)
+                input_value = (
+                    int(record.request["source_sample_rate"]),
+                    np.frombuffer(raw, dtype=np.float32).copy(),
+                )
+                input_note = "参考/源音频可播放"
+            except (OSError, KeyError, TypeError, ValueError):
+                input_value = None
+
+        metadata_value: dict = {}
+        metadata_note = "运行参数文件不可用"
+        if record.metadata_path and Path(record.metadata_path).is_file():
+            try:
+                metadata_value = json.loads(Path(record.metadata_path).read_text(encoding="utf-8"))
+                metadata_note = "运行参数可用"
+            except (OSError, ValueError, TypeError):
+                metadata_value = {}
+        status = (
+            f"{state_labels.get(record.state, record.state)} · "
+            f"{task.label if task else record.request.get('task_key', '')} · "
+            f"{result_note} · {input_note} · {metadata_note}"
+        )
+        if record.error:
+            status += f" · {record.error}"
+        primary_label = task.primary_label if task else "主要内容"
+        secondary_label = task.secondary_label if task else "附加内容"
+        secondary_value = str(record.request.get("secondary") or "")
+        detail_json = json.dumps(
+            {
+                "request": record.request,
+                "state": record.state,
+                "phase": record.phase,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+                "result_available": result_value is not None,
+                "input_available": input_value is not None,
+                "metadata": metadata_value,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        return (
+            request_id,
+            status,
+            result_value,
+            input_value,
+            gr.update(value=str(record.request.get("primary") or ""), label=f"当时填写 · {primary_label}"),
+            gr.update(
+                value=secondary_value,
+                label=f"当时填写 · {secondary_label}",
+                visible=bool(secondary_value),
+            ),
+            str(record.request.get("instruction") or ""),
+            detail_json,
+        )
+
+    def select_history(evt):
+        row = evt.row_value if evt is not None and isinstance(evt.row_value, (list, tuple)) else None
+        request_id = row[1] if row and len(row) > 1 else ""
+        return history_detail(request_id)
+
+    # gr is imported inside build_ui; deferred annotations cannot resolve it.
+    # An actual EventData class is required for Gradio to inject row selection.
+    select_history.__annotations__["evt"] = gr.SelectData
+
+    def save_selected_result(request_id):
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return "请先生成成功，或在历史记录中选择一项成功任务。"
+        try:
+            record = manager.get(request_id)
+            if record.state != "succeeded" or not record.result_path:
+                return "请先生成成功，或在历史记录中选择一项成功任务。"
+            saved = save_result_copy(record.result_path, paths.outputs)
+            return f"已保存并通过 SHA-256 校验：{saved}"
+        except (KeyError, sqlite3.Error, OSError, ValueError) as exc:
+            return f"保存失败：{exc}。原始结果仍可从输出目录取得。"
+
+    def open_result_folder():
+        try:
+            open_outputs_directory(paths.outputs)
+            return f"已打开输出目录：{paths.outputs}"
+        except OSError as exc:
+            return f"打开失败：{exc}。输出目录：{paths.outputs}"
+
+    def release_loaded_models():
+        try:
+            released = manager.unload_models()
+            if released:
+                return "已释放 AuK 与 Qwen 模型显存；下次生成会重新加载。"
+            return "当前没有运行中的模型进程，无需释放。"
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            return f"释放失败：{exc}"
 
     def task_updates(request_id, last_audio, is_current):
         if last_audio and not Path(last_audio).is_file():
@@ -561,7 +706,7 @@ def build_ui(
                 "seed": resolved_seed,
                 "seed_mode": "random" if bool(random_seed) else "fixed",
                 "cpu_offload": cpu_offload,
-                "keep_loaded": keep_loaded,
+                "keep_loaded": keep_loaded == "keep" if isinstance(keep_loaded, str) else bool(keep_loaded),
                 "nfe_steps": 4 if is_flash else 32,
                 "cfg_strength": 0.0 if is_flash else 2.0,
                 "client": "ui",
@@ -694,7 +839,21 @@ def build_ui(
                     cancel_button = gr.Button("取消正在查看的任务")
                 with gr.Accordion("高级参数", open=False):
                     cpu_offload = gr.Checkbox(value=True, label="CPU Offload（24GB显存推荐）")
-                    keep_loaded = gr.Checkbox(value=False, label="生成后保持模型驻留")
+                    keep_loaded = gr.Radio(
+                        [
+                            ("默认常驻（后续生成无需重新加载）", "keep"),
+                            ("每次生成后释放（节省显存）", "release"),
+                        ],
+                        value="keep",
+                        label="模型驻留策略",
+                    )
+                    with gr.Row():
+                        release_models_button = gr.Button("🧹 立即释放已加载模型", variant="secondary")
+                        model_memory_status = gr.Textbox(
+                            value="默认常驻；切换任务模型或 CPU Offload 设置时会按需重新加载。",
+                            label="模型显存状态",
+                            interactive=False,
+                        )
                     instruction_preview = gr.Textbox(
                         label="最终模型指令",
                         lines=3,
@@ -708,18 +867,39 @@ def build_ui(
                     previous_audio = gr.Audio(label="上一次结果 B", type="filepath")
                 metadata = gr.Code(label="运行参数", language="json")
                 gr.Markdown(f"输出目录：`{paths.outputs}`")
+                with gr.Row():
+                    save_result_button = gr.Button("💾 保存本次结果到下载文件夹")
+                    open_folder_button = gr.Button("📂 打开输出文件夹")
+                save_status = gr.Textbox(label="本机保存状态", interactive=False)
+                gr.Markdown("浏览器下载被安全策略拦截时，可使用本机保存按钮；历史结果可在下方选择后保存。")
         with gr.Accordion("历史记录与失败重试", open=False):
             refresh_history = gr.Button("刷新历史", size="sm")
+            gr.Markdown("单击任意历史行即可查看并播放当时的生成结果与参考/待处理音频。")
             history = gr.Dataframe(
-                headers=["时间", "任务 ID", "类型", "模型", "Seed", "状态", "错误"],
+                headers=["时间", "任务 ID", "类型", "内容摘要", "模型", "Seed", "参考/源音频", "状态", "错误"],
                 value=recent_rows(),
                 interactive=False,
                 wrap=True,
             )
             with gr.Row():
                 retry_request = gr.Textbox(label="历史任务 ID", placeholder="从历史记录复制完整任务 ID")
-                view_button = gr.Button("查看结果 / 状态")
+                view_button = gr.Button("查看完整历史详情")
                 retry_button = gr.Button("重试失败 / 取消 / 中断任务")
+                cancel_history_button = gr.Button("取消选中的历史任务")
+                legacy_view_button = gr.Button(visible=False)
+            history_status = gr.Textbox(label="历史任务状态", interactive=False)
+            with gr.Row():
+                history_result_audio = gr.Audio(label="历史生成结果", type="filepath")
+                history_input_audio = gr.Audio(label="当时的参考 / 待处理音频", type="numpy")
+            save_history_button = gr.Button("💾 保存选中的历史结果到下载文件夹")
+            history_save_status = gr.Textbox(label="历史结果保存状态", interactive=False)
+            with gr.Row():
+                history_primary = gr.Textbox(label="当时填写 · 主要内容", lines=3, interactive=False)
+                history_secondary = gr.Textbox(
+                    label="当时填写 · 附加内容", lines=3, interactive=False, visible=False,
+                )
+            history_instruction = gr.Textbox(label="当时发送给模型的最终指令", lines=3, interactive=False)
+            history_metadata = gr.Code(label="完整任务与运行参数", language="json")
         task_choice.change(
             update_task,
             [task_choice, source_audio, duration, primary, auto_duration, source_duration, secondary],
@@ -780,16 +960,29 @@ def build_ui(
         cancel_button.click(cancel_task, current_request, status, queue=False)
         refresh_history.click(recent_rows, outputs=history, queue=False)
         demo.load(recent_rows, outputs=history, queue=False)
+        history_detail_outputs = [
+            retry_request, history_status, history_result_audio, history_input_audio,
+            history_primary, history_secondary, history_instruction, history_metadata,
+        ]
+        history.select(select_history, outputs=history_detail_outputs, queue=False)
         retry_button.click(
             retry_task,
             [retry_request, last_audio, view_state],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
-        view_button.click(
+        view_button.click(history_detail, retry_request, history_detail_outputs, queue=False)
+        # Preserve the old result-view callback as an internal compatibility
+        # endpoint for stale browser sessions and concurrency regression tests.
+        legacy_view_button.click(
             view_task,
             [retry_request, last_audio, view_state],
             [status, result_audio, previous_audio, metadata, current_request, last_audio, history],
         )
+        release_models_button.click(release_loaded_models, outputs=model_memory_status, queue=False)
+        save_result_button.click(save_selected_result, current_request, save_status, queue=False)
+        save_history_button.click(save_selected_result, retry_request, history_save_status, queue=False)
+        cancel_history_button.click(cancel_task, retry_request, history_status, queue=False)
+        open_folder_button.click(open_result_folder, outputs=save_status, queue=False)
         check_update_button.click(
             check_program_update,
             outputs=[update_status, install_update_button],

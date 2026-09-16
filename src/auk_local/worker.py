@@ -4,6 +4,7 @@ import multiprocessing as mp
 import os
 import queue
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -164,6 +165,33 @@ class WorkerSupervisor:
                 with self._guard:
                     self._current_id = None
                     self._cancel_event.clear()
+
+    def unload(self, timeout: float = 30.0) -> bool:
+        """Release the model in the worker without restarting the local service."""
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("任务正在运行，完成或取消后才能释放模型")
+        try:
+            with self._guard:
+                if self._closed:
+                    raise RuntimeError("推理 worker 已关闭")
+                if self._current_id is not None:
+                    raise RuntimeError("任务正在运行，完成或取消后才能释放模型")
+                if self._process is None or not self._process.is_alive():
+                    return False
+                self._input.put({"type": "unload"})
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not self._process.is_alive():
+                    raise RuntimeError("释放模型时推理 worker 意外退出")
+                try:
+                    message = self._output.get(timeout=min(0.2, max(0.01, deadline - time.monotonic())))
+                except queue.Empty:
+                    continue
+                if message.get("type") == "unloaded":
+                    return True
+            raise TimeoutError("释放模型超时")
+        finally:
+            self._run_lock.release()
 
     def cancel(self, request_id: str) -> bool:
         with self._guard:

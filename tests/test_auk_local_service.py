@@ -37,6 +37,7 @@ def test_local_api_defaults_to_high_quality_base_model(tmp_path):
             }
         )
         assert normalized["model"] == "base"
+        assert normalized["keep_loaded"] is True
     finally:
         manager.close()
 

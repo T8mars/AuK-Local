@@ -34,7 +34,9 @@ If an existing 0.2.2 installation stages the update but does not restart, manual
 - Light Chinese Gradio workspace on `127.0.0.1:7860`
 - Local FastAPI service with a per-install session token
 - Queued jobs, cancellation, retry, history, audio output, and JSON metadata
+- Clickable history details with playable generated and source/reference audio, prompts, final model instruction, and full parameters
 - AuK Base by default for editing quality, with AuK-Flash available for fast previews
+- Models stay resident after a successful task by default; the UI also provides release-after-task and manual VRAM release controls
 - Automatic TTS duration to prevent short text from continuing into an internal conditioning marker
 - Official per-task duration rules derived from the audio actually submitted after trimming
 - Random Seed draw mode by default, with fixed Seed available for reproducibility
@@ -55,7 +57,11 @@ Pitch, volume, timbre, de-accent, whisper, enhancement, quality repair, and sepa
 
 Speed editing always locks the duration control and calculates the target as `source duration / speed multiplier`. A manual target is never used for this task, because extra output time can make the model fill the tail with damaged audio.
 
-The browser supports two applied trimming paths. For waveform trimming, drag a range, click the scissors, and then click the **Trim** confirmation shown by the player. Alternatively, enter the trim start and end and click **Apply trim**. Both paths replace the current input, immediately update the displayed submitted duration, and allow the audio to be cleared or replaced afterwards. Source/reference input and generated output are each limited to 30 seconds independently; they are not added together, so a 30-second input may produce a 30-second output. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
+The browser supports two applied trimming paths. For waveform trimming, drag a range, click the scissors, and then click the **Trim** confirmation shown by the player. Alternatively, enter the trim start and end and click **Apply trim**. Both paths replace the current input and immediately update the submitted duration. The native **↶** button beside the scissors restores the original upload without uploading it again. Source/reference input and generated output are each limited to 30 seconds independently; they are not added together, so a 30-second input may produce a 30-second output. Emotion, de-accenting, and whisper conversion require ordinary spoken speech; singing and already-standard speech are unsuitable validation sources for those tasks.
+
+History keeps the latest 50 tasks. Clicking a row restores the generated result, source/reference audio when present, entered text, final model instruction, and complete request/metadata JSON. Missing or damaged history files are reported instead of being shown as playable.
+
+If Chrome blocks its download link under a security policy, use **Save current result to Downloads** or select a history row and use **Save selected history result to Downloads**. These buttons copy the existing local WAV to the Windows Downloads folder and verify SHA-256 without overwriting an existing file. **Open output folder** also gives direct access to all original results.
 
 ## Release contents
 
