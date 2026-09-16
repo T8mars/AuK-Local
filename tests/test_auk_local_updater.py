@@ -201,3 +201,13 @@ def test_launcher_hands_exit_42_to_external_updater(tmp_path):
 def test_windows_update_script_has_utf8_bom_for_chinese_allowlist():
     package = Path(__file__).resolve().parents[1]
     assert (package / "scripts/Apply-AuK-Update.ps1").read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_windows_batch_launchers_use_consistent_crlf():
+    package = Path(__file__).resolve().parents[1]
+    scripts = [*package.glob("*.cmd"), *package.joinpath("scripts").glob("*.cmd")]
+    assert scripts
+    for script in scripts:
+        payload = script.read_bytes()
+        assert payload.startswith(b"\xef\xbb\xbf"), script
+        assert b"\n" not in payload.replace(b"\r\n", b""), script

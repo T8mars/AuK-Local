@@ -83,7 +83,7 @@ $payload = [ordered]@{
     channel = 'stable'
     version = $Version
     published_at = [DateTimeOffset]::UtcNow.ToString('o')
-    notes = 'Limits source and generated audio independently to 30 seconds; fixes applied trimming and stale duration validation; adds task-aware preprocessing, verified official prompts, quality repair, and Base as the quality default.'
+    notes = 'Limits source and generated audio independently to 30 seconds; fixes launcher and update handoff reliability, applied trimming, stale duration validation, task preprocessing, official prompts, and quality repair.'
     compatibility = [ordered]@{ service_protocol = '1.0' }
     package = [ordered]@{
         name = $ArchiveName
